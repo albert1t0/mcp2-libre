@@ -40,17 +40,34 @@ class FakeContainer:
 class FakeRun:
     def __init__(self, text, **formatting):
         self.text = text
+        self.inherited_properties = formatting.pop("_inherited_properties", {}).copy()
         for name, value in formatting.items():
             setattr(self, name, value)
 
     def getString(self):
         return self.text
+    def getPropertyState(self, name):
+        if not hasattr(self, name):
+            return "UNAVAILABLE"
+        if (
+            name in self.inherited_properties
+            and getattr(self, name) == self.inherited_properties[name]
+        ):
+            return "DEFAULT_VALUE"
+        return "DIRECT_VALUE"
+
+    def setPropertyToDefault(self, name):
+        if name in self.inherited_properties:
+            setattr(self, name, self.inherited_properties[name])
+        elif hasattr(self, name):
+            delattr(self, name)
 
 
 class FakeParagraph(FakeContainer):
     def __init__(self, text, runs=(), **formatting):
         super().__init__(runs)
         self.text = text
+        self.inherited_properties = formatting.pop("_inherited_properties", {}).copy()
         for name, value in formatting.items():
             setattr(self, name, value)
 
@@ -65,6 +82,21 @@ class FakeParagraph(FakeContainer):
 
     def createTextCursorByRange(self, text_range):
         return FakeTextCursor(self)
+    def getPropertyState(self, name):
+        if not hasattr(self, name):
+            return "UNAVAILABLE"
+        if (
+            name in self.inherited_properties
+            and getattr(self, name) == self.inherited_properties[name]
+        ):
+            return "DEFAULT_VALUE"
+        return "DIRECT_VALUE"
+
+    def setPropertyToDefault(self, name):
+        if name in self.inherited_properties:
+            setattr(self, name, self.inherited_properties[name])
+        elif hasattr(self, name):
+            delattr(self, name)
 
 
 class FakeTextCursor:
@@ -182,9 +214,75 @@ class FakeShape(FakeRun):
     def __init__(self, text, shape_type="com.sun.star.drawing.TextShape", **props):
         super().__init__(text, **props)
         self.shape_type = shape_type
-
     def getShapeType(self):
         return self.shape_type
+
+class FakePropertySetInfo:
+    PROPERTY_TYPES = {
+        "CharFontName": "string",
+        "CharHeight": "float",
+        "CharWeight": "float",
+        "CharPosture": "com.sun.star.awt.FontSlant",
+        "CharColor": "long",
+        "CharUnderline": "short",
+        "ParaAdjust": "short",
+        "ParaFirstLineIndent": "long",
+        "ParaLeftMargin": "long",
+        "ParaRightMargin": "long",
+        "ParaTopMargin": "long",
+        "ParaBottomMargin": "long",
+    }
+
+    def getPropertyByName(self, name):
+        return SimpleNamespace(
+            Type=SimpleNamespace(typeName=self.PROPERTY_TYPES[name])
+        )
+
+
+class FakeStyle:
+    def __init__(self, **properties):
+        self.inherited_properties = properties.pop("_inherited_properties", {}).copy()
+        for name, value in properties.items():
+            setattr(self, name, value)
+    def getPropertySetInfo(self):
+        return FakePropertySetInfo()
+
+    def getPropertyState(self, name):
+        if not hasattr(self, name):
+            return "UNAVAILABLE"
+        if (
+            name in self.inherited_properties
+            and getattr(self, name) == self.inherited_properties[name]
+        ):
+            return "DEFAULT_VALUE"
+        return "DIRECT_VALUE"
+
+    def setPropertyToDefault(self, name):
+        if name in self.inherited_properties:
+            setattr(self, name, self.inherited_properties[name])
+        elif hasattr(self, name):
+            delattr(self, name)
+
+
+class FakeStyleFamily:
+    def __init__(self, styles):
+        self.styles = dict(styles)
+
+    def getElementNames(self):
+        return tuple(self.styles)
+
+    def getByName(self, name):
+        return self.styles[name]
+
+
+class FakeStyleFamilies:
+    def __init__(self, paragraph_styles):
+        self.paragraph_styles = FakeStyleFamily(paragraph_styles)
+
+    def getByName(self, name):
+        if name != "ParagraphStyles":
+            raise KeyError(name)
+        return self.paragraph_styles
 
 
 class FakeDocument:
@@ -204,6 +302,7 @@ class FakeDocument:
         text=None,
         sheets=None,
         pages=None,
+        paragraph_styles=None,
     ):
         self.doc_type = doc_type
         self.Title = title
@@ -211,6 +310,8 @@ class FakeDocument:
         self.text = text
         self.sheets = sheets
         self.pages = pages
+        self.paragraph_styles = paragraph_styles or {}
+        self.modified = False
 
     def supportsService(self, service):
         return service in self.SERVICES[self.doc_type]
@@ -226,6 +327,13 @@ class FakeDocument:
 
     def getDrawPages(self):
         return FakeIndexContainer(self.pages)
+    def getStyleFamilies(self):
+        return FakeStyleFamilies(self.paragraph_styles)
+    def setModified(self, modified):
+        self.modified = modified
+
+    def isModified(self):
+        return self.modified
 
 
 class FakeDesktop:
@@ -485,6 +593,178 @@ def test_search_result_limit_sets_truncated(monkeypatch):
     assert result["count"] == 1
     assert result["truncated"] is True
 
+def test_paragraph_style_inspection_lists_exact_names_and_filters(monkeypatch):
+    document = FakeDocument(
+        "writer",
+        paragraph_styles={
+            "normal": FakeStyle(
+                CharFontName="Liberation Serif",
+                CharHeight=12.0,
+                CharWeight=100.0,
+                CharPosture=0,
+                ParaAdjust="LEFT",
+            ),
+            "Text body": FakeStyle(
+                CharFontName="Avenir",
+                CharHeight=11.0,
+                CharWeight=150.0,
+                CharPosture=2,
+                ParentStyle="Default Paragraph Style",
+            ),
+            "Heading 1": FakeStyle(CharFontName="Liberation Sans"),
+        },
+    )
+    bridge = make_bridge(monkeypatch, [document], document)
+
+    all_styles = bridge.get_writer_paragraph_styles()
+    filtered = bridge.get_writer_paragraph_styles(query="BODY")
+    limited = bridge.get_writer_paragraph_styles(max_results=2)
+
+    assert all_styles["success"] is True
+    assert [style["name"] for style in all_styles["styles"]] == [
+        "normal",
+        "Text body",
+        "Heading 1",
+    ]
+    assert all_styles["styles"][0]["font_name"] == "Liberation Serif"
+    assert all_styles["styles"][0]["alignment"] == "LEFT"
+    assert all_styles["styles"][1]["character_defaults"]["italic"] is True
+    assert all_styles["styles"][1]["parent_style"] == "Default Paragraph Style"
+    assert [style["name"] for style in filtered["styles"]] == ["Text body"]
+    assert limited["count"] == 2
+    assert limited["truncated"] is True
+
+
+def test_paragraph_style_update_previews_guards_and_preserves_direct_format(monkeypatch):
+    style = FakeStyle(CharFontName="Liberation Serif")
+    paragraph = FakeParagraph(
+        "Directly formatted text",
+        CharFontName="Avenir",
+        ParaStyleName="normal",
+    )
+    document = FakeDocument(
+        "writer",
+        text=FakeContainer([paragraph]),
+        paragraph_styles={"normal": style},
+    )
+    bridge = make_bridge(monkeypatch, [document], document)
+
+    preview = bridge.update_writer_paragraph_style(
+        property_name="CharFontName",
+        value="Calibri",
+        style_name="normal",
+        expected_current_value="Liberation Serif",
+    )
+    stale = bridge.update_writer_paragraph_style(
+        property_name="CharFontName",
+        value="Calibri",
+        style_name="normal",
+        expected_current_value="Avenir",
+        dry_run=False,
+    )
+    missing = bridge.update_writer_paragraph_style(
+        property_name="CharFontName",
+        value="Calibri",
+        style_name="Normal",
+        dry_run=False,
+    )
+
+    assert preview["success"] is True
+    assert preview["dry_run"] is True
+    assert preview["before"] == "Liberation Serif"
+    assert preview["after"] == "Calibri"
+    assert preview["property_name"] == "CharFontName"
+    assert preview["property_state_before"] == "DIRECT_VALUE"
+    assert style.CharFontName == "Liberation Serif"
+    assert stale["success"] is False
+    assert "no changes made" in stale["error"]
+    assert missing["success"] is False
+    assert "exact names" in missing["error"]
+
+    applied = bridge.update_writer_paragraph_style(
+        property_name="CharFontName",
+        value="Calibri",
+        style_name="normal",
+        expected_current_value="Liberation Serif",
+        dry_run=False,
+    )
+
+    assert applied["success"] is True
+    assert applied["before"] == "Liberation Serif"
+    assert applied["after"] == "Calibri"
+    assert applied["status"] == "updated"
+    assert applied["saved"] is False
+    assert style.CharFontName == "Calibri"
+    assert paragraph.CharFontName == "Avenir"
+    assert document.isModified() is True
+
+
+def test_direct_paragraph_format_preserves_direct_runs_and_updates_inherited_runs(
+    monkeypatch,
+):
+    direct_run = FakeRun("Direct", CharFontName="Avenir")
+    inherited_run = FakeRun(
+        " inherited",
+        CharFontName="Liberation Serif",
+        _inherited_properties={"CharFontName": "Liberation Serif"},
+    )
+    paragraph = FakeParagraph(
+        "Direct inherited",
+        runs=[direct_run, inherited_run],
+        ParaStyleName="normal",
+    )
+    document = FakeDocument("writer", text=FakeContainer([paragraph]))
+    bridge = make_bridge(monkeypatch, [document], document)
+    targets = [
+        {
+            "location": {"section": "body", "paragraph": 1},
+            "expected_text": "Direct inherited",
+            "expected_style": "normal",
+        }
+    ]
+
+    result = bridge.apply_writer_paragraph_formatting(
+        targets=targets,
+        property_name="CharFontName",
+        value="Calibri",
+        dry_run=False,
+    )
+
+    assert result["success"] is True
+    assert result["dry_run"] is False
+    assert result["saved"] is False
+    assert result["updated_portions"] == 1
+    assert result["changes"][0]["updated_portions"] == 1
+    assert result["changes"][0]["preserved_direct_portions"] == 1
+    assert direct_run.CharFontName == "Avenir"
+    assert inherited_run.CharFontName == "Calibri"
+    assert inherited_run.getPropertyState("CharFontName") == "DIRECT_VALUE"
+    assert document.isModified() is True
+
+
+def test_paragraph_style_tools_validate_writer_type_and_limits(monkeypatch):
+    writer = FakeDocument("writer")
+    calc = FakeDocument("calc")
+    bridge = make_bridge(monkeypatch, [writer, calc], writer)
+
+    invalid_query = bridge.get_writer_paragraph_styles(query="")
+    invalid_limit = bridge.get_writer_paragraph_styles(max_results=501)
+    bridge.desktop.active = calc
+    unsupported_list = bridge.get_writer_paragraph_styles()
+    unsupported_update = bridge.update_writer_paragraph_style(
+        property_name="CharFontName",
+        value="Calibri",
+        style_name="normal",
+    )
+
+    assert invalid_query["success"] is False
+    assert invalid_limit["success"] is False
+    assert unsupported_list["success"] is False
+    assert "only supported for Writer" in unsupported_list["error"]
+    assert unsupported_update["success"] is False
+    assert "only supported for Writer" in unsupported_update["error"]
+
+
 def test_heading_search_finds_styles_and_outline_levels(monkeypatch):
     document = FakeDocument(
         "writer",
@@ -668,6 +948,7 @@ def test_plugin_rest_registers_and_executes_live_search(monkeypatch):
     bridge_module = types.ModuleType(f"{package_name}.uno_bridge")
 
     class FakeUNOBridge:
+        STYLE_ATTRIBUTE_SPECS = {"CharFontName": {}, "CharHeight": {}}
         def search_document_elements(self, query, document_identifier=None, max_results=100):
             return {
                 "success": True,
@@ -684,6 +965,60 @@ def test_plugin_rest_registers_and_executes_live_search(monkeypatch):
                 "document_identifier": document_identifier,
                 "max_results": max_results,
                 "matches": [],
+            }
+
+        def get_writer_paragraph_styles(
+            self, query=None, document_identifier=None, max_results=100
+        ):
+            return {
+                "success": True,
+                "query": query,
+                "document_identifier": document_identifier,
+                "max_results": max_results,
+                "styles": [{"name": "normal", "font_name": "Liberation Serif"}],
+            }
+
+        def update_writer_paragraph_style(
+            self,
+            property_name,
+            value,
+            style_name=None,
+            location=None,
+            expected_text=None,
+            expected_style=None,
+            expected_current_value=None,
+            document_identifier=None,
+            dry_run=True,
+        ):
+            return {
+                "success": True,
+                "property_name": property_name,
+                "value": value,
+                "style_name": style_name,
+                "location": location,
+                "expected_text": expected_text,
+                "expected_style": expected_style,
+                "expected_current_value": expected_current_value,
+                "document_identifier": document_identifier,
+                "dry_run": dry_run,
+                "saved": False,
+            }
+        def apply_writer_paragraph_formatting(
+            self,
+            targets,
+            property_name,
+            value,
+            document_identifier=None,
+            dry_run=True,
+        ):
+            return {
+                "success": True,
+                "targets": targets,
+                "property_name": property_name,
+                "value": value,
+                "document_identifier": document_identifier,
+                "dry_run": dry_run,
+                "saved": False,
             }
 
         def replace_document_elements(
@@ -727,6 +1062,8 @@ def test_plugin_rest_registers_and_executes_live_search(monkeypatch):
             tool for tool in tools if tool["name"] == "search_document_elements_live"
         )
         assert tool["parameters"]["required"] == ["query"]
+        assert "property_name" not in tool["parameters"]["properties"]
+        assert "value" not in tool["parameters"]["properties"]
         heading_tool = next(
             tool for tool in tools if tool["name"] == "search_document_headings_live"
         )
@@ -735,6 +1072,35 @@ def test_plugin_rest_registers_and_executes_live_search(monkeypatch):
             tool for tool in tools if tool["name"] == "replace_document_elements_live"
         )
         assert replacement_tool["parameters"]["properties"]["dry_run"]["default"] is True
+        styles_tool = next(
+            tool for tool in tools if tool["name"] == "get_writer_paragraph_styles_live"
+        )
+        assert "query" not in styles_tool["parameters"].get("required", [])
+        update_style_tool = next(
+            tool
+            for tool in tools
+            if tool["name"] == "update_writer_paragraph_style_live"
+        )
+        assert update_style_tool["parameters"]["required"] == [
+            "property_name",
+            "value",
+        ]
+        assert update_style_tool["parameters"]["properties"]["property_name"]["enum"] == [
+            "CharFontName",
+            "CharHeight",
+        ]
+        assert update_style_tool["parameters"]["properties"]["dry_run"]["default"] is True
+        apply_format_tool = next(
+            tool
+            for tool in tools
+            if tool["name"] == "apply_writer_paragraph_formatting_live"
+        )
+        assert apply_format_tool["parameters"]["required"] == [
+            "targets",
+            "property_name",
+            "value",
+        ]
+        assert apply_format_tool["parameters"]["properties"]["dry_run"]["default"] is True
 
         request = Request(
             f"{base_url}/tools/search_document_elements_live",
@@ -764,6 +1130,60 @@ def test_plugin_rest_registers_and_executes_live_search(monkeypatch):
         )
         with urlopen(heading_request, timeout=2) as response:
             heading_result = json.load(response)
+        styles_request = Request(
+            f"{base_url}/tools/get_writer_paragraph_styles_live",
+            data=json.dumps(
+                {
+                    "query": "normal",
+                    "document_identifier": "file:///target",
+                    "max_results": 9,
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(styles_request, timeout=2) as response:
+            styles_result = json.load(response)
+        update_style_request = Request(
+            f"{base_url}/tools/update_writer_paragraph_style_live",
+            data=json.dumps(
+                {
+                    "style_name": "normal",
+                    "property_name": "CharFontName",
+                    "value": "Calibri",
+                    "expected_current_value": "Liberation Serif",
+                    "document_identifier": "file:///target",
+                    "dry_run": False,
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(update_style_request, timeout=2) as response:
+            update_style_result = json.load(response)
+        targets = [
+            {
+                "location": {"section": "body", "paragraph": 2},
+                "expected_text": "Guarded paragraph",
+                "expected_style": "Body Text",
+            }
+        ]
+        apply_format_request = Request(
+            f"{base_url}/tools/apply_writer_paragraph_formatting_live",
+            data=json.dumps(
+                {
+                    "targets": targets,
+                    "property_name": "CharFontName",
+                    "value": "Calibri",
+                    "document_identifier": "file:///target",
+                    "dry_run": False,
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(apply_format_request, timeout=2) as response:
+            apply_format_result = json.load(response)
 
         edits = [
             {
@@ -795,6 +1215,35 @@ def test_plugin_rest_registers_and_executes_live_search(monkeypatch):
             "document_identifier": "file:///target",
             "max_results": 4,
             "matches": [],
+        }
+        assert styles_result == {
+            "success": True,
+            "query": "normal",
+            "document_identifier": "file:///target",
+            "max_results": 9,
+            "styles": [{"name": "normal", "font_name": "Liberation Serif"}],
+        }
+        assert update_style_result == {
+            "success": True,
+            "property_name": "CharFontName",
+            "value": "Calibri",
+            "style_name": "normal",
+            "location": None,
+            "expected_text": None,
+            "expected_style": None,
+            "expected_current_value": "Liberation Serif",
+            "document_identifier": "file:///target",
+            "dry_run": False,
+            "saved": False,
+        }
+        assert apply_format_result == {
+            "success": True,
+            "targets": targets,
+            "property_name": "CharFontName",
+            "value": "Calibri",
+            "document_identifier": "file:///target",
+            "dry_run": False,
+            "saved": False,
         }
         assert replacement_result == {
             "success": True,

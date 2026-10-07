@@ -1,4 +1,4 @@
-"""Exercise live heading search and guarded replacement against real LibreOffice UNO.
+"""Exercise live Writer search, replacement, and style tools against real UNO.
 
 Run with the Python interpreter that can import LibreOffice's ``uno`` module:
     /usr/bin/python3 tests/integration_live_tools_uno.py
@@ -138,6 +138,91 @@ def run_integration_test():
             bridge = UNOBridge.__new__(UNOBridge)
             bridge.desktop = desktop
             bridge.get_active_document = lambda: document
+            default_paragraph_number, default_paragraph, default_paragraph_text = next(
+                bridge._writer_body_paragraphs(document)
+            )
+            style_name = bridge._property(default_paragraph, "ParaStyleName")
+            paragraph_styles = document.getStyleFamilies().getByName(
+                "ParagraphStyles"
+            )
+            default_style = paragraph_styles.getByName(style_name)
+            original_font = bridge._property(default_style, "CharFontName")
+            inspected_styles = bridge.get_writer_paragraph_styles(query=style_name)
+            assert inspected_styles["success"] is True, inspected_styles
+            assert any(
+                style["name"] == style_name
+                for style in inspected_styles["styles"]
+            ), inspected_styles
+            direct_cursor = default_paragraph.getText().createTextCursorByRange(
+                default_paragraph.getStart()
+            )
+            assert direct_cursor.goRight(7, True), "could not select direct-format test text"
+            direct_cursor.CharFontName = "Avenir"
+            assert direct_cursor.CharFontName == "Avenir"
+
+            style_preview = bridge.update_writer_paragraph_style(
+                property_name="CharFontName",
+                value="Calibri",
+                style_name=style_name,
+                expected_current_value=original_font,
+            )
+            assert style_preview["success"] is True, style_preview
+            assert style_preview["dry_run"] is True
+            assert style_preview["before"] == original_font
+            assert default_style.CharFontName == original_font
+
+            style_update = bridge.update_writer_paragraph_style(
+                property_name="CharFontName",
+                value="Calibri",
+                style_name=style_name,
+                expected_current_value=original_font,
+                dry_run=False,
+            )
+            assert style_update["success"] is True, style_update
+            assert style_update["before"] == original_font
+            assert default_style.CharFontName == "Calibri"
+            assert direct_cursor.CharFontName == "Avenir", (
+                "style update overwrote directly formatted text"
+            )
+            formatting_target = [
+                {
+                    "location": {
+                        "section": "body",
+                        "paragraph": default_paragraph_number,
+                    },
+                    "expected_text": default_paragraph_text,
+                    "expected_style": style_name,
+                }
+            ]
+            formatting_preview = bridge.apply_writer_paragraph_formatting(
+                targets=formatting_target,
+                property_name="CharFontName",
+                value="Aptos",
+            )
+            assert formatting_preview["success"] is True, formatting_preview
+            assert formatting_preview["dry_run"] is True
+            assert direct_cursor.CharFontName == "Avenir"
+            formatting_update = bridge.apply_writer_paragraph_formatting(
+                targets=formatting_target,
+                property_name="CharFontName",
+                value="Aptos",
+                dry_run=False,
+            )
+            assert formatting_update["success"] is True, formatting_update
+            assert formatting_update["updated_portions"] > 0
+            assert default_style.CharFontName == "Calibri"
+            assert direct_cursor.CharFontName == "Avenir", (
+                "direct paragraph formatting overwrote directly formatted text"
+            )
+            stale_style_update = bridge.update_writer_paragraph_style(
+                property_name="CharFontName",
+                value="Liberation Serif",
+                style_name=style_name,
+                expected_current_value=original_font,
+                dry_run=False,
+            )
+            assert stale_style_update["success"] is False, stale_style_update
+            assert default_style.CharFontName == "Calibri"
 
             headings = bridge.search_document_headings()
             assert headings["success"] is True, headings
@@ -191,6 +276,10 @@ def run_integration_test():
                 "result": "passed",
                 "libreoffice": version,
                 "isolated_profile": True,
+                "style_update_applied": True,
+                "paragraph_formatting_applied": True,
+                "direct_format_preserved": True,
+                "stale_style_update_rejected": True,
                 "headings_found": len(headings["matches"]),
                 "dry_run_preserved_text": True,
                 "replacements_applied": applied["count"],

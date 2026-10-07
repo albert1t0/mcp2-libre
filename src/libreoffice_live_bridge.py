@@ -138,6 +138,112 @@ def search_document_headings_live(
 
 @mcp.tool(
     description=(
+        "Inspect exact paragraph style names and their default font and formatting "
+        "in an already-open Writer document. Does not edit or save."
+    )
+)
+def get_writer_paragraph_styles_live(
+    query: str | None = None,
+    document_identifier: str | None = None,
+    max_results: int = 100,
+) -> dict[str, Any]:
+    parameters: dict[str, Any] = {"max_results": max_results}
+    if query is not None:
+        parameters["query"] = query
+    if document_identifier is not None:
+        parameters["document_identifier"] = document_identifier
+    return _execute_tool("get_writer_paragraph_styles_live", parameters)
+
+
+@mcp.tool(
+    description=(
+        "Preview or change one allowlisted property of an existing Writer paragraph "
+        "style. Supports guarded style-name or paragraph-location targets, previews "
+        "by default, and never saves."
+    )
+)
+def update_writer_paragraph_style_live(
+    property_name: Literal[
+        "CharFontName",
+        "CharHeight",
+        "CharWeight",
+        "CharPosture",
+        "CharColor",
+        "CharUnderline",
+        "ParaAdjust",
+        "ParaFirstLineIndent",
+        "ParaLeftMargin",
+        "ParaRightMargin",
+        "ParaTopMargin",
+        "ParaBottomMargin",
+    ],
+    value: str | float | int,
+    style_name: str | None = None,
+    location: dict[str, Any] | None = None,
+    expected_text: str | None = None,
+    expected_style: str | None = None,
+    expected_current_value: str | float | int | None = None,
+    document_identifier: str | None = None,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    parameters: dict[str, Any] = {
+        "property_name": property_name,
+        "value": value,
+        "dry_run": dry_run,
+    }
+    for key, option in {
+        "style_name": style_name,
+        "location": location,
+        "expected_text": expected_text,
+        "expected_style": expected_style,
+        "expected_current_value": expected_current_value,
+    }.items():
+        if option is not None:
+            parameters[key] = option
+    if document_identifier is not None:
+        parameters["document_identifier"] = document_identifier
+    return _execute_tool("update_writer_paragraph_style_live", parameters)
+
+@mcp.tool(
+    description=(
+        "Apply one allowlisted formatting property directly to guarded Writer body "
+        "paragraphs. Preserves directly formatted portions, previews by default, "
+        "and never saves."
+    )
+)
+def apply_writer_paragraph_formatting_live(
+    targets: list[dict[str, Any]],
+    property_name: Literal[
+        "CharFontName",
+        "CharHeight",
+        "CharWeight",
+        "CharPosture",
+        "CharColor",
+        "CharUnderline",
+        "ParaAdjust",
+        "ParaFirstLineIndent",
+        "ParaLeftMargin",
+        "ParaRightMargin",
+        "ParaTopMargin",
+        "ParaBottomMargin",
+    ],
+    value: str | float | int,
+    document_identifier: str | None = None,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    parameters: dict[str, Any] = {
+        "targets": targets,
+        "property_name": property_name,
+        "value": value,
+        "dry_run": dry_run,
+    }
+    if document_identifier is not None:
+        parameters["document_identifier"] = document_identifier
+    return _execute_tool("apply_writer_paragraph_formatting_live", parameters)
+
+
+@mcp.tool(
+    description=(
         "Replace exact substrings in open Writer body paragraphs after checking "
         "expected paragraph text and style. Previews by default and never saves."
     )

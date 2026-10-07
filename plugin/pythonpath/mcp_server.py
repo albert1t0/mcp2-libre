@@ -217,6 +217,201 @@ class LibreOfficeMCPServer:
             "handler": self.search_document_headings_live,
         }
 
+        self.tools["get_writer_paragraph_styles_live"] = {
+            "description": (
+                "Inspect existing paragraph styles in an already-open Writer document, "
+                "including their default font, size, and character formatting. "
+                "This tool never edits or saves."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Optional case-insensitive style-name filter",
+                    },
+                    "document_identifier": {
+                        "type": "string",
+                        "description": (
+                            "Exact title or URL of an already-open document; "
+                            "omit to use the active document"
+                        ),
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 500,
+                        "default": 100,
+                        "description": "Maximum paragraph styles to return",
+                    },
+                },
+            },
+            "handler": self.get_writer_paragraph_styles_live,
+        }
+
+        self.tools["update_writer_paragraph_style_live"] = {
+            "description": (
+                "Preview or change one allowlisted property of an existing Writer "
+                "paragraph style. Target by exact style name or by a guarded body "
+                "paragraph location. Reports inherited descendant styles affected, "
+                "previews by default, and never saves."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "property_name": {
+                        "type": "string",
+                        "enum": list(UNOBridge.STYLE_ATTRIBUTE_SPECS),
+                        "description": "Allowlisted UNO style property to update",
+                    },
+                    "value": {
+                        "anyOf": [
+                            {"type": "string"},
+                            {"type": "number"},
+                            {"type": "integer"},
+                        ],
+                        "description": "New value, validated against the UNO property type",
+                    },
+                    "style_name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": (
+                            "Exact existing paragraph style name. Provide this or "
+                            "location, but not both."
+                        ),
+                    },
+                    "location": {
+                        "type": "object",
+                        "properties": {
+                            "section": {"type": "string", "enum": ["body"]},
+                            "paragraph": {"type": "integer", "minimum": 1},
+                        },
+                        "required": ["section", "paragraph"],
+                        "description": (
+                            "Resolve the paragraph's shared style; requires "
+                            "expected_text and expected_style guards"
+                        ),
+                    },
+                    "expected_text": {
+                        "type": "string",
+                        "description": "Exact current paragraph text when targeting by location",
+                    },
+                    "expected_style": {
+                        "type": "string",
+                        "description": "Exact current paragraph style when targeting by location",
+                    },
+                    "expected_current_value": {
+                        "anyOf": [
+                            {"type": "string"},
+                            {"type": "number"},
+                            {"type": "integer"},
+                        ],
+                        "description": "Optional guard for the current property value",
+                    },
+                    "document_identifier": {
+                        "type": "string",
+                        "description": (
+                            "Exact title or URL of an already-open document; "
+                            "omit to use the active document"
+                        ),
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": (
+                            "Preview the style change without modifying the document"
+                        ),
+                    },
+                },
+                "required": ["property_name", "value"],
+                "oneOf": [
+                    {
+                        "required": ["style_name"],
+                        "not": {"required": ["location"]},
+                    },
+                    {
+                        "required": ["location", "expected_text", "expected_style"],
+                        "not": {"required": ["style_name"]},
+                    },
+                ],
+            },
+            "handler": self.update_writer_paragraph_style_live,
+        }
+        self.tools["apply_writer_paragraph_formatting_live"] = {
+            "description": (
+                "Apply one allowlisted formatting property directly to guarded body "
+                "paragraphs. Uses exact expected text and style, preserves portions "
+                "with direct formatting, previews by default, and never saves."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "targets": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 500,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "location": {
+                                    "type": "object",
+                                    "properties": {
+                                        "section": {
+                                            "type": "string",
+                                            "enum": ["body"],
+                                        },
+                                        "paragraph": {
+                                            "type": "integer",
+                                            "minimum": 1,
+                                        },
+                                    },
+                                    "required": ["section", "paragraph"],
+                                },
+                                "expected_text": {
+                                    "type": "string",
+                                    "description": "Exact current paragraph text",
+                                },
+                                "expected_style": {
+                                    "type": "string",
+                                    "description": "Exact current paragraph style",
+                                },
+                            },
+                            "required": [
+                                "location",
+                                "expected_text",
+                                "expected_style",
+                            ],
+                        },
+                    },
+                    "property_name": {
+                        "type": "string",
+                        "enum": list(UNOBridge.STYLE_ATTRIBUTE_SPECS),
+                    },
+                    "value": {
+                        "anyOf": [
+                            {"type": "string"},
+                            {"type": "number"},
+                            {"type": "integer"},
+                        ],
+                        "description": "New value, validated against the UNO property type",
+                    },
+                    "document_identifier": {
+                        "type": "string",
+                        "description": (
+                            "Exact title or URL of an already-open document; "
+                            "omit to use the active document"
+                        ),
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "default": True,
+                    },
+                },
+                "required": ["targets", "property_name", "value"],
+            },
+            "handler": self.apply_writer_paragraph_formatting_live,
+        }
+
         self.tools["replace_document_elements_live"] = {
             "description": (
                 "Replace exact substrings in body paragraphs of an already-open Writer "
@@ -453,6 +648,60 @@ class LibreOfficeMCPServer:
             query=query,
             document_identifier=document_identifier,
             max_results=max_results,
+        )
+
+    def get_writer_paragraph_styles_live(
+        self,
+        query: Optional[str] = None,
+        document_identifier: Optional[str] = None,
+        max_results: int = 100,
+    ) -> Dict[str, Any]:
+        """Inspect existing paragraph styles in an open Writer document."""
+        return self.uno_bridge.get_writer_paragraph_styles(
+            query=query,
+            document_identifier=document_identifier,
+            max_results=max_results,
+        )
+
+    def update_writer_paragraph_style_live(
+        self,
+        property_name: str,
+        value: Any,
+        style_name: Optional[str] = None,
+        location: Optional[Dict[str, Any]] = None,
+        expected_text: Optional[str] = None,
+        expected_style: Optional[str] = None,
+        expected_current_value: Any = None,
+        document_identifier: Optional[str] = None,
+        dry_run: bool = True,
+    ) -> Dict[str, Any]:
+        """Preview or update one allowlisted Writer paragraph style property."""
+        return self.uno_bridge.update_writer_paragraph_style(
+            property_name=property_name,
+            value=value,
+            style_name=style_name,
+            location=location,
+            expected_text=expected_text,
+            expected_style=expected_style,
+            expected_current_value=expected_current_value,
+            document_identifier=document_identifier,
+            dry_run=dry_run,
+        )
+    def apply_writer_paragraph_formatting_live(
+        self,
+        targets: List[Dict[str, Any]],
+        property_name: str,
+        value: Any,
+        document_identifier: Optional[str] = None,
+        dry_run: bool = True,
+    ) -> Dict[str, Any]:
+        """Preview or apply one formatting property to guarded Writer paragraphs."""
+        return self.uno_bridge.apply_writer_paragraph_formatting(
+            targets=targets,
+            property_name=property_name,
+            value=value,
+            document_identifier=document_identifier,
+            dry_run=dry_run,
         )
 
     def replace_document_elements_live(

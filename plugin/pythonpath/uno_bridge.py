@@ -13,6 +13,7 @@ from com.sun.star.awt import XActionListener
 from typing import Any, Optional, Dict, List
 import logging
 import traceback
+import math
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -23,6 +24,75 @@ class UNOBridge:
     """Bridge between MCP operations and LibreOffice UNO API"""
     MAX_CALC_CELLS_TO_SCAN = 100000
     MAX_SEARCH_RESULTS = 500
+    STYLE_ATTRIBUTE_SPECS = {
+        "CharFontName": {"kind": "string", "target": "character"},
+        "CharHeight": {
+            "kind": "number",
+            "target": "character",
+            "minimum": 0.1,
+            "maximum": 1000.0,
+        },
+        "CharWeight": {
+            "kind": "number",
+            "target": "character",
+            "minimum": 0.0,
+            "maximum": 150.0,
+        },
+        "CharPosture": {
+            "kind": "enum",
+            "target": "character",
+            "uno_type": "com.sun.star.awt.FontSlant",
+            "values": ("NONE", "ITALIC", "OBLIQUE"),
+        },
+        "CharColor": {
+            "kind": "integer",
+            "target": "character",
+            "minimum": -1,
+            "maximum": 16777215,
+        },
+        "CharUnderline": {
+            "kind": "integer",
+            "target": "character",
+            "minimum": 0,
+            "maximum": 18,
+        },
+        "ParaAdjust": {
+            "kind": "integer",
+            "target": "paragraph",
+            "minimum": 0,
+            "maximum": 5,
+        },
+        "ParaFirstLineIndent": {
+            "kind": "integer",
+            "target": "paragraph",
+            "minimum": -1000000,
+            "maximum": 1000000,
+        },
+        "ParaLeftMargin": {
+            "kind": "integer",
+            "target": "paragraph",
+            "minimum": 0,
+            "maximum": 1000000,
+        },
+        "ParaRightMargin": {
+            "kind": "integer",
+            "target": "paragraph",
+            "minimum": 0,
+            "maximum": 1000000,
+        },
+        "ParaTopMargin": {
+            "kind": "integer",
+            "target": "paragraph",
+            "minimum": 0,
+            "maximum": 1000000,
+        },
+        "ParaBottomMargin": {
+            "kind": "integer",
+            "target": "paragraph",
+            "minimum": 0,
+            "maximum": 1000000,
+        },
+    }
     
     def __init__(self):
         """Initialize the UNO bridge"""
@@ -387,6 +457,622 @@ class UNOBridge:
                 
         except Exception as e:
             logger.error(f"Failed to get text content: {e}")
+            return {"success": False, "error": str(e)}
+    def get_writer_paragraph_styles(
+        self,
+        query: Optional[str] = None,
+        document_identifier: Optional[str] = None,
+        max_results: int = 100,
+    ) -> Dict[str, Any]:
+        """List existing Writer paragraph styles and their character defaults."""
+        if query is not None and (not isinstance(query, str) or not query):
+            return {
+                "success": False,
+                "error": "query must be a non-empty string when provided",
+            }
+        if (
+            isinstance(max_results, bool)
+            or not isinstance(max_results, int)
+            or max_results < 1
+            or max_results > self.MAX_SEARCH_RESULTS
+        ):
+            return {
+                "success": False,
+                "error": f"max_results must be an integer from 1 to {self.MAX_SEARCH_RESULTS}",
+            }
+
+        doc, error = self._resolve_search_document(document_identifier)
+        if error:
+            return {"success": False, "error": error}
+
+        try:
+            doc_type = self._get_document_type(doc)
+            if doc_type != "writer":
+                return {
+                    "success": False,
+                    "error": "Paragraph style inspection is only supported for Writer documents",
+                }
+
+            style_families = doc.getStyleFamilies()
+            paragraph_styles = style_families.getByName("ParagraphStyles")
+            get_element_names = getattr(paragraph_styles, "getElementNames", None)
+            get_by_name = getattr(paragraph_styles, "getByName", None)
+            if not callable(get_element_names) or not callable(get_by_name):
+                return {
+                    "success": False,
+                    "error": "Writer paragraph styles cannot be enumerated",
+                }
+
+            style_names = [
+                str(name)
+                for name in get_element_names()
+                if query is None or query.casefold() in str(name).casefold()
+            ]
+            truncated = len(style_names) > max_results
+            styles = []
+            for style_name in style_names[:max_results]:
+                style = get_by_name(style_name)
+                character_defaults = self._formatting_metadata(style)
+                metadata = {
+                    "name": style_name,
+                    "font_name": self._json_value(
+                        self._property(style, "CharFontName")
+                    ),
+                    "font_size": self._json_value(
+                        self._property(style, "CharHeight")
+                    ),
+                    "bold": character_defaults.get("bold"),
+                    "italic": character_defaults.get("italic"),
+                    "character_defaults": character_defaults,
+                    "attributes": self._style_attribute_details(style),
+                }
+                parent_style = self._property(style, "ParentStyle")
+                if parent_style:
+                    metadata["parent_style"] = self._json_value(parent_style)
+                alignment = self._property(style, "ParaAdjust")
+                if alignment is not None:
+                    metadata["alignment"] = self._json_value(alignment)
+                styles.append(metadata)
+
+            return {
+                "success": True,
+                "document": {
+                    "title": self._document_title(doc),
+                    "url": self._document_url(doc),
+                    "type": doc_type,
+                },
+                "query": query,
+                "styles": styles,
+                "count": len(styles),
+                "truncated": truncated,
+            }
+        except Exception as e:
+            logger.error(f"Failed to inspect Writer paragraph styles: {e}")
+            return {"success": False, "error": str(e)}
+
+    def _resolve_paragraph_style_name(
+        self,
+        doc: Any,
+        style_name: Optional[str],
+        location: Optional[Dict[str, Any]],
+        expected_text: Optional[str],
+        expected_style: Optional[str],
+    ) -> tuple[Optional[str], Optional[str]]:
+        if (style_name is None) == (location is None):
+            return None, "provide exactly one of style_name or location"
+        if style_name is not None:
+            if not isinstance(style_name, str) or not style_name:
+                return None, "style_name must be a non-empty string"
+            return style_name, None
+        if (
+            not isinstance(location, dict)
+            or location.get("section") != "body"
+            or isinstance(location.get("paragraph"), bool)
+            or not isinstance(location.get("paragraph"), int)
+            or location["paragraph"] < 1
+        ):
+            return None, "location must identify a body paragraph with a positive paragraph number"
+        if not isinstance(expected_text, str) or not isinstance(expected_style, str):
+            return None, "location targets require expected_text and expected_style guards"
+        paragraphs = {
+            number: (element, text)
+            for number, element, text in self._writer_body_paragraphs(doc)
+        }
+        target = paragraphs.get(location["paragraph"])
+        if target is None:
+            return None, "location does not identify a current body paragraph"
+        element, text = target
+        if text != expected_text:
+            return None, "paragraph text does not match expected_text; no changes made"
+        actual_style = self._property(element, "ParaStyleName")
+        if actual_style != expected_style:
+            return None, "paragraph style does not match expected_style; no changes made"
+        return str(actual_style), None
+
+    def _style_descendant_effects(
+        self, paragraph_styles: Any, style_name: str, property_name: str
+    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        impacted = []
+        overridden = []
+        names = paragraph_styles.getElementNames()
+        get_by_name = paragraph_styles.getByName
+        for candidate_name in names:
+            candidate_name = str(candidate_name)
+            if candidate_name == style_name:
+                continue
+            candidate = get_by_name(candidate_name)
+            parent_name = self._property(candidate, "ParentStyle")
+            visited = set()
+            inherits_from_target = False
+            while parent_name and str(parent_name) not in visited:
+                parent_name = str(parent_name)
+                if parent_name == style_name:
+                    inherits_from_target = True
+                    break
+                visited.add(parent_name)
+                try:
+                    parent = get_by_name(parent_name)
+                except Exception:
+                    break
+                parent_name = self._property(parent, "ParentStyle")
+            if not inherits_from_target:
+                continue
+
+            entry = {
+                "style_name": candidate_name,
+                "before": self._json_value(self._property(candidate, property_name)),
+                "state": self._property_state(candidate, property_name),
+            }
+            if entry["state"] == "DEFAULT_VALUE":
+                impacted.append(entry)
+            elif entry["state"] == "DIRECT_VALUE":
+                overridden.append(entry)
+        return impacted, overridden
+
+    def update_writer_paragraph_style(
+        self,
+        property_name: str,
+        value: Any,
+        style_name: Optional[str] = None,
+        location: Optional[Dict[str, Any]] = None,
+        expected_text: Optional[str] = None,
+        expected_style: Optional[str] = None,
+        expected_current_value: Any = None,
+        document_identifier: Optional[str] = None,
+        dry_run: bool = True,
+    ) -> Dict[str, Any]:
+        """Preview or change one allowlisted property on an existing paragraph style."""
+        normalized_value, validation_error = self._normalize_style_attribute(
+            property_name, value
+        )
+        if validation_error:
+            return {"success": False, "error": validation_error}
+        if expected_current_value is not None:
+            _, expected_error = self._normalize_style_attribute(
+                property_name, expected_current_value
+            )
+            if expected_error:
+                return {
+                    "success": False,
+                    "error": f"expected_current_value is invalid: {expected_error}",
+                }
+        if not isinstance(dry_run, bool):
+            return {"success": False, "error": "dry_run must be a boolean"}
+
+        doc, error = self._resolve_search_document(document_identifier)
+        if error:
+            return {"success": False, "error": error}
+        try:
+            doc_type = self._get_document_type(doc)
+            if doc_type != "writer":
+                return {
+                    "success": False,
+                    "error": "Paragraph style updates are only supported for Writer documents",
+                }
+            resolved_style_name, error = self._resolve_paragraph_style_name(
+                doc, style_name, location, expected_text, expected_style
+            )
+            if error:
+                return {"success": False, "error": error}
+
+            paragraph_styles = doc.getStyleFamilies().getByName("ParagraphStyles")
+            try:
+                style = paragraph_styles.getByName(resolved_style_name)
+            except Exception:
+                return {
+                    "success": False,
+                    "error": (
+                        f"Paragraph style '{resolved_style_name}' does not exist; "
+                        "inspect get_writer_paragraph_styles_live for exact names"
+                    ),
+                }
+
+            property_info = style.getPropertySetInfo().getPropertyByName(property_name)
+            spec = self.STYLE_ATTRIBUTE_SPECS[property_name]
+            actual_type = property_info.Type.typeName
+            if spec["kind"] == "enum":
+                valid_types = {spec["uno_type"]}
+            else:
+                valid_types = {
+                    "string": {"string"},
+                    "number": {"float", "double"},
+                    "integer": {"short", "long", "hyper"},
+                }[spec["kind"]]
+            if actual_type not in valid_types:
+                return {
+                    "success": False,
+                    "error": (
+                        f"UNO property {property_name} has unsupported type {actual_type}"
+                    ),
+                }
+
+            current_value = self._property(style, property_name)
+            before = self._json_value(current_value)
+            if (
+                expected_current_value is not None
+                and before != self._json_value(
+                    self._normalize_style_attribute(
+                        property_name, expected_current_value
+                    )[0]
+                )
+            ):
+                return {
+                    "success": False,
+                    "error": (
+                        "Style property no longer matches expected_current_value; "
+                        "no changes made"
+                    ),
+                }
+            impacted, overridden = self._style_descendant_effects(
+                paragraph_styles, resolved_style_name, property_name
+            )
+
+            if not dry_run:
+                set_modified = getattr(doc, "setModified", None)
+                if not callable(set_modified):
+                    return {
+                        "success": False,
+                        "error": "Writer document cannot track unsaved style changes",
+                    }
+                setattr(style, property_name, normalized_value)
+                current_value = self._property(style, property_name)
+                if self._json_value(current_value) != self._json_value(normalized_value):
+                    if self._property_state(style, property_name) == "DEFAULT_VALUE":
+                        style.setPropertyToDefault(property_name)
+                    else:
+                        setattr(style, property_name, current_value)
+                    return {
+                        "success": False,
+                        "error": f"LibreOffice did not apply {property_name}",
+                    }
+                set_modified(True)
+
+            return {
+                "success": True,
+                "dry_run": dry_run,
+                "document": {
+                    "title": self._document_title(doc),
+                    "url": self._document_url(doc),
+                    "type": doc_type,
+                },
+                "style_name": resolved_style_name,
+                "resolved_from_location": location is not None,
+                "property_name": property_name,
+                "before": before,
+                "after": self._json_value(normalized_value),
+                "property_state_before": self._property_state(style, property_name)
+                if dry_run
+                else "DIRECT_VALUE",
+                "impacted_descendant_styles": impacted,
+                "overridden_descendant_styles": overridden,
+                "status": "preview" if dry_run else "updated",
+                "saved": False,
+            }
+        except Exception as e:
+            logger.error(f"Failed to update Writer paragraph style: {e}")
+            return {"success": False, "error": str(e)}
+
+    def apply_writer_paragraph_formatting(
+        self,
+        targets: List[Dict[str, Any]],
+        property_name: str,
+        value: Any,
+        document_identifier: Optional[str] = None,
+        dry_run: bool = True,
+    ) -> Dict[str, Any]:
+        """Apply one property directly to guarded paragraphs without overriding direct runs."""
+        if not isinstance(targets, list) or not targets:
+            return {"success": False, "error": "targets must be a non-empty array"}
+        if len(targets) > self.MAX_SEARCH_RESULTS:
+            return {
+                "success": False,
+                "error": f"targets cannot contain more than {self.MAX_SEARCH_RESULTS} items",
+            }
+        normalized_value, validation_error = self._normalize_style_attribute(
+            property_name, value
+        )
+        if validation_error:
+            return {"success": False, "error": validation_error}
+        if not isinstance(dry_run, bool):
+            return {"success": False, "error": "dry_run must be a boolean"}
+
+        doc, error = self._resolve_search_document(document_identifier)
+        if error:
+            return {"success": False, "error": error}
+        try:
+            doc_type = self._get_document_type(doc)
+            if doc_type != "writer":
+                return {
+                    "success": False,
+                    "error": "Paragraph formatting is only supported for Writer documents",
+                }
+
+            paragraphs = {
+                number: (element, text)
+                for number, element, text in self._writer_body_paragraphs(doc)
+            }
+            seen_locations = set()
+            prepared = []
+            validation_errors = []
+            spec = self.STYLE_ATTRIBUTE_SPECS[property_name]
+            for target_index, target in enumerate(targets):
+                if not isinstance(target, dict):
+                    validation_errors.append(
+                        {"target_index": target_index, "error": "target must be an object"}
+                    )
+                    continue
+                location = target.get("location")
+                if (
+                    not isinstance(location, dict)
+                    or location.get("section") != "body"
+                    or isinstance(location.get("paragraph"), bool)
+                    or not isinstance(location.get("paragraph"), int)
+                    or location["paragraph"] < 1
+                ):
+                    validation_errors.append(
+                        {
+                            "target_index": target_index,
+                            "error": "location must identify a body paragraph with a positive paragraph number",
+                        }
+                    )
+                    continue
+                paragraph_number = location["paragraph"]
+                if paragraph_number in seen_locations:
+                    validation_errors.append(
+                        {
+                            "target_index": target_index,
+                            "error": "only one target per paragraph is allowed",
+                        }
+                    )
+                    continue
+                seen_locations.add(paragraph_number)
+                expected_text = target.get("expected_text")
+                expected_style = target.get("expected_style")
+                if not isinstance(expected_text, str) or not isinstance(
+                    expected_style, str
+                ) or not expected_style:
+                    validation_errors.append(
+                        {
+                            "target_index": target_index,
+                            "error": "expected_text and non-empty expected_style are required",
+                        }
+                    )
+                    continue
+                current = paragraphs.get(paragraph_number)
+                if current is None:
+                    validation_errors.append(
+                        {
+                            "target_index": target_index,
+                            "error": "location does not identify a current body paragraph",
+                        }
+                    )
+                    continue
+                element, current_text = current
+                if current_text != expected_text:
+                    validation_errors.append(
+                        {
+                            "target_index": target_index,
+                            "error": "paragraph text does not match expected_text",
+                        }
+                    )
+                    continue
+                current_style = self._property(element, "ParaStyleName")
+                if current_style != expected_style:
+                    validation_errors.append(
+                        {
+                            "target_index": target_index,
+                            "error": "paragraph style does not match expected_style",
+                        }
+                    )
+                    continue
+
+                operations = []
+                preserved_direct = 0
+                already_matching = 0
+                if spec["target"] == "character":
+                    portions = [
+                        portion
+                        for portion in self._enumerate_items(element)
+                        if self._range_string(portion)
+                    ]
+                    for portion in portions:
+                        state = self._property_state(portion, property_name)
+                        if state == "DIRECT_VALUE":
+                            preserved_direct += 1
+                        elif state == "DEFAULT_VALUE":
+                            before = self._property(portion, property_name)
+                            if self._json_value(before) == self._json_value(
+                                normalized_value
+                            ):
+                                already_matching += 1
+                            elif not callable(
+                                getattr(portion, "setPropertyToDefault", None)
+                            ):
+                                validation_errors.append(
+                                    {
+                                        "target_index": target_index,
+                                        "error": (
+                                            "text portion cannot restore inherited "
+                                            "formatting if an update fails"
+                                        ),
+                                    }
+                                )
+                            else:
+                                operations.append(
+                                    {
+                                        "object": portion,
+                                        "before": self._json_value(before),
+                                    }
+                                )
+                        else:
+                            validation_errors.append(
+                                {
+                                    "target_index": target_index,
+                                    "error": (
+                                        f"could not determine direct-format state for "
+                                        f"{property_name}"
+                                    ),
+                                }
+                            )
+                else:
+                    state = self._property_state(element, property_name)
+                    if state == "DIRECT_VALUE":
+                        preserved_direct = 1
+                    elif state == "DEFAULT_VALUE":
+                        before = self._property(element, property_name)
+                        if self._json_value(before) == self._json_value(
+                            normalized_value
+                        ):
+                            already_matching = 1
+                        elif not callable(
+                            getattr(element, "setPropertyToDefault", None)
+                        ):
+                            validation_errors.append(
+                                {
+                                    "target_index": target_index,
+                                    "error": (
+                                        "paragraph cannot restore inherited formatting "
+                                        "if an update fails"
+                                    ),
+                                }
+                            )
+                        else:
+                            operations.append(
+                                {
+                                    "object": element,
+                                    "before": self._json_value(before),
+                                }
+                            )
+                    else:
+                        validation_errors.append(
+                            {
+                                "target_index": target_index,
+                                "error": (
+                                    f"could not determine direct-format state for "
+                                    f"{property_name}"
+                                ),
+                            }
+                        )
+
+                prepared.append(
+                    {
+                        "target_index": target_index,
+                        "location": {
+                            "section": "body",
+                            "paragraph": paragraph_number,
+                        },
+                        "style": str(current_style),
+                        "before": [operation["before"] for operation in operations],
+                        "operations": operations,
+                        "preserved_direct_portions": preserved_direct,
+                        "already_matching_portions": already_matching,
+                    }
+                )
+
+            if validation_errors:
+                return {
+                    "success": False,
+                    "error": "Paragraph formatting preflight failed; no changes made",
+                    "errors": validation_errors,
+                }
+
+            applied_operations = []
+            if not dry_run:
+                set_modified = getattr(doc, "setModified", None)
+                if not callable(set_modified) and any(
+                    item["operations"] for item in prepared
+                ):
+                    return {
+                        "success": False,
+                        "error": "Writer document cannot track unsaved paragraph formatting",
+                    }
+                try:
+                    for item in prepared:
+                        for operation in item["operations"]:
+                            target_object = operation["object"]
+                            setattr(target_object, property_name, normalized_value)
+                            applied_operations.append((target_object, property_name))
+                            if self._json_value(
+                                self._property(target_object, property_name)
+                            ) != self._json_value(normalized_value):
+                                raise RuntimeError(
+                                    f"LibreOffice did not apply {property_name}"
+                                )
+                    if applied_operations:
+                        set_modified(True)
+                except Exception as apply_error:
+                    rollback_errors = []
+                    for target_object, property_to_restore in reversed(
+                        applied_operations
+                    ):
+                        try:
+                            target_object.setPropertyToDefault(property_to_restore)
+                        except Exception as rollback_error:
+                            rollback_errors.append(str(rollback_error))
+                    return {
+                        "success": False,
+                        "error": f"Paragraph formatting failed and was rolled back: {apply_error}",
+                        "rollback_errors": rollback_errors,
+                    }
+
+            changes = []
+            for item in prepared:
+                changes.append(
+                    {
+                        "target_index": item["target_index"],
+                        "location": item["location"],
+                        "style": item["style"],
+                        "property_name": property_name,
+                        "before": item["before"],
+                        "after": self._json_value(normalized_value),
+                        "updated_portions": len(item["operations"]),
+                        "preserved_direct_portions": item[
+                            "preserved_direct_portions"
+                        ],
+                        "already_matching_portions": item[
+                            "already_matching_portions"
+                        ],
+                        "status": "preview" if dry_run else "applied",
+                    }
+                )
+            return {
+                "success": True,
+                "dry_run": dry_run,
+                "document": {
+                    "title": self._document_title(doc),
+                    "url": self._document_url(doc),
+                    "type": doc_type,
+                },
+                "property_name": property_name,
+                "count": len(changes),
+                "updated_portions": len(applied_operations)
+                if not dry_run
+                else sum(len(item["operations"]) for item in prepared),
+                "changes": changes,
+                "saved": False,
+            }
+        except Exception as e:
+            logger.error(f"Failed to apply Writer paragraph formatting: {e}")
             return {"success": False, "error": str(e)}
 
     def search_document_headings(
@@ -979,6 +1665,77 @@ class UNOBridge:
             return getattr(obj, name)
         except Exception:
             return None
+    @staticmethod
+    def _property_state(obj: Any, name: str) -> str:
+        get_property_state = getattr(obj, "getPropertyState", None)
+        if not callable(get_property_state):
+            return "UNAVAILABLE"
+        try:
+            state = get_property_state(name)
+        except Exception:
+            return "UNAVAILABLE"
+        value = getattr(state, "value", state)
+        state_text = str(value).upper()
+        for state_name in ("DEFAULT_VALUE", "DIRECT_VALUE", "AMBIGUOUS_VALUE"):
+            if state_name in state_text:
+                return state_name
+        return state_text
+
+    def _normalize_style_attribute(
+        self, property_name: str, value: Any
+    ) -> tuple[Any, Optional[str]]:
+        spec = self.STYLE_ATTRIBUTE_SPECS.get(property_name)
+        if spec is None:
+            allowed = ", ".join(self.STYLE_ATTRIBUTE_SPECS)
+            return None, f"property_name must be one of: {allowed}"
+
+        kind = spec["kind"]
+        if kind == "string":
+            if not isinstance(value, str) or not value:
+                return None, f"{property_name} must be a non-empty string"
+            return value, None
+        if kind == "number":
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return None, f"{property_name} must be a number"
+            if not math.isfinite(value):
+                return None, f"{property_name} must be finite"
+            if not spec["minimum"] <= value <= spec["maximum"]:
+                return (
+                    None,
+                    f"{property_name} must be between {spec['minimum']} and {spec['maximum']}",
+                )
+            return float(value), None
+        if kind == "integer":
+            if isinstance(value, bool) or not isinstance(value, int):
+                return None, f"{property_name} must be an integer"
+            if not spec["minimum"] <= value <= spec["maximum"]:
+                return (
+                    None,
+                    f"{property_name} must be between {spec['minimum']} and {spec['maximum']}",
+                )
+            return value, None
+        if kind == "enum":
+            if not isinstance(value, str) or value.upper() not in spec["values"]:
+                allowed_values = ", ".join(spec["values"])
+                return None, f"{property_name} must be one of: {allowed_values}"
+            try:
+                return uno.Enum(spec["uno_type"], value.upper()), None
+            except Exception as e:
+                return None, f"Could not construct {property_name} UNO value: {e}"
+        return None, f"{property_name} has an unsupported UNO type"
+
+    def _style_attribute_details(self, obj: Any) -> Dict[str, Dict[str, Any]]:
+        attributes = {}
+        for property_name in self.STYLE_ATTRIBUTE_SPECS:
+            value = self._property(obj, property_name)
+            state = self._property_state(obj, property_name)
+            if state == "UNAVAILABLE" and value is None:
+                continue
+            attributes[property_name] = {
+                "value": self._json_value(value),
+                "state": state,
+            }
+        return attributes
 
     @staticmethod
     def _json_value(value: Any) -> Any:

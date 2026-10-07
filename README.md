@@ -244,6 +244,77 @@ paragraphs, and never save the document automatically.
 }
 ```
 
+#### Inspecting and updating paragraph styles
+
+Use `get_writer_paragraph_styles_live` to discover the exact paragraph style
+names and inspect their supported attributes and inheritance state. Style
+names vary by document and locale, so use the exact name returned by inspection.
+
+`update_writer_paragraph_style_live` updates one property on a shared paragraph
+style. It requires `property_name` and `value`, plus exactly one target:
+`style_name`, or a body `location` accompanied by exact `expected_text` and
+`expected_style` guards. An optional `expected_current_value` prevents applying
+a stale update. The operation previews by default; set `dry_run` to `false` to
+change the in-memory document. Its result reports affected descendant styles.
+
+The `property_name` allowlist and value types are:
+
+- `CharFontName`: non-empty string.
+- `CharHeight`: number from 0.1 to 1000; `CharWeight`: number from 0 to 150.
+- `CharPosture`: one of `NONE`, `ITALIC`, or `OBLIQUE`.
+- `CharColor`: integer from -1 to 16,777,215; `CharUnderline`: integer from 0
+  to 18; `ParaAdjust`: integer from 0 to 5.
+- `ParaFirstLineIndent`: integer from -1,000,000 to 1,000,000.
+- `ParaLeftMargin`, `ParaRightMargin`, `ParaTopMargin`, and `ParaBottomMargin`:
+  integers from 0 to 1,000,000, in UNO units.
+
+`apply_writer_paragraph_formatting_live` is separate from shared-style updates.
+It requires `targets`, `property_name`, and `value`. Each target identifies one
+body paragraph by location and includes its exact `expected_text` and
+`expected_style`; duplicate paragraph locations are rejected. The whole batch
+is preflighted before any changes. Character properties are applied only to
+portions inheriting the value, preserving directly formatted portions. It also
+previews by default and accepts `dry_run: false` to apply in memory.
+
+Both operations accept an optional `document_identifier` for an already-open
+Writer document and never save automatically. `targets` accepts 1–500 entries.
+
+```json
+{
+  "query": "normal",
+  "max_results": 100
+}
+```
+
+Use an exact style name returned by inspection for the update:
+
+```json
+{
+  "property_name": "CharFontName",
+  "value": "Calibri",
+  "style_name": "normal",
+  "expected_current_value": "Liberation Serif",
+  "dry_run": true
+}
+```
+
+To update paragraph formatting without changing the shared style, pass guarded
+paragraph targets instead:
+
+```json
+{
+  "targets": [
+    {
+      "location": { "section": "body", "paragraph": 3 },
+      "expected_text": "The exact current paragraph text",
+      "expected_style": "Body Text"
+    }
+  ],
+  "property_name": "CharFontName",
+  "value": "Calibri",
+  "dry_run": true
+}
+```
 ### 2. Claude Desktop
 
 Generate configuration automatically:

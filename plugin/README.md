@@ -260,6 +260,71 @@ curl -X POST http://localhost:8765/tools/replace_document_elements_live \
 `dry_run` defaults to `true`. Review the preview before calling again with
 `dry_run: false` to apply the changes. Editing changes the in-memory Writer
 document only; the tools never save it automatically.
+### **Paragraph Style Inspection and Updates**
+
+Call `get_writer_paragraph_styles_live` to list the exact paragraph style names
+in an already-open Writer document and inspect supported attributes and their
+inheritance state. Names may differ by document or LibreOffice version; use the
+returned spelling exactly.
+
+`update_writer_paragraph_style_live` updates one shared style property. It
+requires `property_name` and `value`, plus exactly one target: an exact
+`style_name`, or a body `location` with exact `expected_text` and
+`expected_style` guards. Optionally supply `expected_current_value` as a stale
+value guard. It previews by default; `dry_run: false` applies the update in
+memory and reports affected descendant styles.
+
+Supported properties and values:
+
+- `CharFontName`: non-empty string; `CharHeight`: 0.1–1000; `CharWeight`: 0–150.
+- `CharPosture`: `NONE`, `ITALIC`, or `OBLIQUE`.
+- `CharColor`: -1–16,777,215; `CharUnderline`: 0–18; `ParaAdjust`: 0–5.
+- `ParaFirstLineIndent`: -1,000,000–1,000,000.
+- `ParaLeftMargin`, `ParaRightMargin`, `ParaTopMargin`, `ParaBottomMargin`:
+  0–1,000,000 UNO units.
+
+`apply_writer_paragraph_formatting_live` changes direct paragraph formatting
+without changing its shared style. It requires `targets`, `property_name`, and
+`value`; each target contains a body paragraph `location`, exact
+`expected_text`, and exact `expected_style`. The batch is preflighted before
+mutation, duplicate locations are rejected, and character formatting is only
+applied to portions inheriting that property, preserving directly formatted
+portions. It previews by default and accepts at most 500 targets.
+
+Both operations can target a specific already-open document with
+`document_identifier` and never save automatically.
+
+```bash
+# Inspect styles, optionally filtering by part of the name
+curl -X POST http://localhost:8765/tools/get_writer_paragraph_styles_live \
+  -H "Content-Type: application/json" \
+  -d '{"query":"normal","max_results":100}'
+
+# Preview a property change using the exact returned style name and value
+curl -X POST http://localhost:8765/tools/update_writer_paragraph_style_live \
+  -H "Content-Type: application/json" \
+  -d '{
+    "property_name":"CharFontName",
+    "value":"Calibri",
+    "style_name":"normal",
+    "expected_current_value":"Liberation Serif",
+    "dry_run":true
+  }'
+
+# Preview direct formatting on a guarded paragraph
+curl -X POST http://localhost:8765/tools/apply_writer_paragraph_formatting_live \
+  -H "Content-Type: application/json" \
+  -d '{
+    "targets":[{
+      "location":{"section":"body","paragraph":3},
+      "expected_text":"The exact current paragraph text",
+      "expected_style":"Body Text"
+    }],
+    "property_name":"CharFontName",
+    "value":"Calibri",
+    "dry_run":true
+  }'
+```
 
 ## 🔄 Comparison with External MCP Server
 | Capability | Standalone server | Extension |
@@ -348,10 +413,11 @@ that provides the UNO module:
 ```
 
 The script launches an isolated headless LibreOffice process and temporary
-profile, tests heading discovery and guarded replacement in an unsaved temporary
-Writer document, and disposes it without saving. Set `LIBREOFFICE_BIN` if the
-LibreOffice executable is not on `PATH`. The REST registration and stdio bridge
-are tested separately by the repository's `pytest -q` suite.
+profile, tests guarded style updates, direct paragraph formatting, heading
+discovery, and guarded replacement in an unsaved temporary Writer document,
+then disposes it without saving. Set `LIBREOFFICE_BIN` if the LibreOffice
+executable is not on `PATH`. The REST registration and stdio bridge are tested
+separately by the repository's `pytest -q` suite.
 
 ## 📜 License
 

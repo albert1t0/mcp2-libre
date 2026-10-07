@@ -177,6 +177,7 @@ def load_plugin_server(monkeypatch):
     bridge_module = types.ModuleType(f"{package_name}.uno_bridge")
 
     class FakeUNOBridge:
+        STYLE_ATTRIBUTE_SPECS = {"CharFontName": {}}
         def get_selected_text(self):
             return {"success": True, "text": "selected"}
 
