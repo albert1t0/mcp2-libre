@@ -39,11 +39,19 @@ async def test_tools_are_registered_and_forward_calls(monkeypatch):
             "save_document_live",
             "export_document_live",
             "get_text_content_live",
+            "search_document_elements_live",
+            "get_selected_text_live",
+            "replace_selected_text_live",
             "list_open_documents",
         } <= names
 
         result = await client.call_tool(
             "insert_text_live", {"text": "Hello", "position": 0}
+        )
+        await client.call_tool("get_selected_text_live", {})
+        await client.call_tool(
+            "replace_selected_text_live",
+            {"expected_text": "old", "replacement_text": "new"},
         )
 
     assert not result.is_error
@@ -52,7 +60,17 @@ async def test_tools_are_registered_and_forward_calls(monkeypatch):
             "http://localhost:8765/tools/insert_text_live",
             {"text": "Hello", "position": 0},
             bridge.REQUEST_TIMEOUT,
-        )
+        ),
+        (
+            "http://localhost:8765/tools/get_selected_text_live",
+            {},
+            bridge.REQUEST_TIMEOUT,
+        ),
+        (
+            "http://localhost:8765/tools/replace_selected_text_live",
+            {"expected_text": "old", "replacement_text": "new"},
+            bridge.REQUEST_TIMEOUT,
+        ),
     ]
 
 
@@ -81,3 +99,37 @@ def test_unavailable_extension_returns_actionable_error(monkeypatch):
 
     with pytest.raises(RuntimeError, match="Start the MCP extension in LibreOffice"):
         bridge.get_document_info_live()
+
+
+@pytest.mark.asyncio
+async def test_search_document_elements_forwards_optional_target(monkeypatch):
+    requests = []
+
+    def fake_post(url, json, timeout):
+        requests.append((url, json, timeout))
+        return FakeResponse()
+
+    monkeypatch.setattr(bridge.httpx, "post", fake_post)
+
+    async with Client(bridge.mcp) as client:
+        result = await client.call_tool(
+            "search_document_elements_live",
+            {
+                "query": "heading",
+                "document_identifier": "file:///target",
+                "max_results": 12,
+            },
+        )
+
+    assert not result.is_error
+    assert requests == [
+        (
+            "http://localhost:8765/tools/search_document_elements_live",
+            {
+                "query": "heading",
+                "max_results": 12,
+                "document_identifier": "file:///target",
+            },
+            bridge.REQUEST_TIMEOUT,
+        )
+    ]

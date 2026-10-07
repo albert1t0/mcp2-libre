@@ -152,6 +152,69 @@ class LibreOfficeMCPServer:
             },
             "handler": self.get_text_content_live
         }
+        self.tools["search_document_elements_live"] = {
+            "description": (
+                "Search an open Writer, Calc, Impress, or Draw document and return "
+                "matching text elements with location and relevant formatting. "
+                "Uses the active document by default; never opens, edits, or saves files."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Case-insensitive text to search for"
+                    },
+                    "document_identifier": {
+                        "type": "string",
+                        "description": (
+                            "Exact title or URL of an already-open document; "
+                            "omit to use the active document"
+                        )
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 500,
+                        "default": 100,
+                        "description": "Maximum matching elements to return"
+                    }
+                },
+                "required": ["query"]
+            },
+            "handler": self.search_document_elements_live
+        }
+
+        self.tools["get_selected_text_live"] = {
+            "description": "Get the text selected in the active Writer document",
+            "parameters": {
+                "type": "object",
+                "properties": {}
+            },
+            "handler": self.get_selected_text_live
+        }
+
+        self.tools["replace_selected_text_live"] = {
+            "description": (
+                "Replace the selected Writer text only if it exactly matches "
+                "expected_text. Does not save the document."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "expected_text": {
+                        "type": "string",
+                        "description": "Exact selected text that was previously reviewed"
+                    },
+                    "replacement_text": {
+                        "type": "string",
+                        "description": "Text to replace the current selection with"
+                    }
+                },
+                "required": ["expected_text", "replacement_text"]
+            },
+            "handler": self.replace_selected_text_live
+        }
         
         # Document list tools
         self.tools["list_open_documents"] = {
@@ -256,6 +319,31 @@ class LibreOfficeMCPServer:
     def get_text_content_live(self) -> Dict[str, Any]:
         """Get text content of the currently active document"""
         return self.uno_bridge.get_text_content()
+    def search_document_elements_live(
+        self,
+        query: str,
+        document_identifier: Optional[str] = None,
+        max_results: int = 100,
+    ) -> Dict[str, Any]:
+        """Search an open document and inspect matching elements."""
+        return self.uno_bridge.search_document_elements(
+            query=query,
+            document_identifier=document_identifier,
+            max_results=max_results,
+        )
+
+    def get_selected_text_live(self) -> Dict[str, Any]:
+        """Get text selected in the active Writer document."""
+        return self.uno_bridge.get_selected_text()
+
+    def replace_selected_text_live(
+        self, expected_text: str, replacement_text: str
+    ) -> Dict[str, Any]:
+        """Replace selected text if it has not changed since it was read."""
+        return self.uno_bridge.replace_selected_text(
+            expected_text=expected_text,
+            replacement_text=replacement_text,
+        )
     
     def list_open_documents(self) -> Dict[str, Any]:
         """List all open documents in LibreOffice"""

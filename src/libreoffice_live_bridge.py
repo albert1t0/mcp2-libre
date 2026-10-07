@@ -99,6 +99,47 @@ def export_document_live(
 def get_text_content_live() -> dict[str, Any]:
     return _execute_tool("get_text_content_live", {})
 
+@mcp.tool(
+    description=(
+        "Search an open Writer, Calc, Impress, or Draw document and return matching "
+        "text elements with their locations and relevant formatting. Uses the active "
+        "document by default and never opens, edits, or saves files."
+    )
+)
+def search_document_elements_live(
+    query: str,
+    document_identifier: str | None = None,
+    max_results: int = 100,
+) -> dict[str, Any]:
+    parameters: dict[str, Any] = {"query": query, "max_results": max_results}
+    if document_identifier is not None:
+        parameters["document_identifier"] = document_identifier
+    return _execute_tool("search_document_elements_live", parameters)
+
+
+@mcp.tool(description="Read the text currently selected in the active Writer document.")
+def get_selected_text_live() -> dict[str, Any]:
+    return _execute_tool("get_selected_text_live", {})
+
+
+@mcp.tool(
+    description=(
+        "Replace selected Writer text only if it exactly matches expected_text. "
+        "Does not save the document."
+    )
+)
+def replace_selected_text_live(
+    expected_text: str,
+    replacement_text: str,
+) -> dict[str, Any]:
+    return _execute_tool(
+        "replace_selected_text_live",
+        {
+            "expected_text": expected_text,
+            "replacement_text": replacement_text,
+        },
+    )
+
 
 @mcp.tool(description="List the documents currently open in LibreOffice.")
 def list_open_documents() -> dict[str, Any]:

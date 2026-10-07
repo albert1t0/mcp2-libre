@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 class UNOBridge:
     """Bridge between MCP operations and LibreOffice UNO API"""
+    MAX_CALC_CELLS_TO_SCAN = 100000
+    MAX_SEARCH_RESULTS = 500
     
     def __init__(self):
         """Initialize the UNO bridge"""
@@ -286,6 +288,87 @@ class UNOBridge:
         except Exception as e:
             logger.error(f"Failed to export document: {e}")
             return {"success": False, "error": str(e)}
+
+    def _get_selected_text_range(self, doc: Any = None) -> tuple[Any, str]:
+        """Return the sole non-empty Writer text selection."""
+        if doc is None:
+            doc = self.get_active_document()
+
+        if not doc or not doc.supportsService("com.sun.star.text.TextDocument"):
+            raise ValueError("No active Writer document")
+
+        selection = doc.getCurrentController().getSelection()
+        if callable(getattr(selection, "getString", None)):
+            text_range = selection
+        elif (
+            callable(getattr(selection, "getCount", None))
+            and callable(getattr(selection, "getByIndex", None))
+        ):
+            selection_count = selection.getCount()
+            if selection_count == 0:
+                raise ValueError("No text is selected")
+            if selection_count != 1:
+                raise ValueError("Select exactly one text range")
+            text_range = selection.getByIndex(0)
+        else:
+            raise ValueError("The current selection is not a text range")
+
+        get_string = getattr(text_range, "getString", None)
+        if not callable(get_string):
+            raise ValueError("The current selection is not a text range")
+
+        selected_text = get_string()
+        if not isinstance(selected_text, str) or selected_text == "":
+            raise ValueError("No text is selected")
+
+        return text_range, selected_text
+
+    def get_selected_text(self, doc: Any = None) -> Dict[str, Any]:
+        """Get the text currently selected in the active Writer document."""
+        try:
+            _, selected_text = self._get_selected_text_range(doc)
+            return {"success": True, "text": selected_text}
+        except Exception as e:
+            logger.error(f"Failed to read selected text: {e}")
+            return {"success": False, "error": str(e)}
+
+    def replace_selected_text(
+        self,
+        expected_text: str,
+        replacement_text: str,
+        doc: Any = None,
+    ) -> Dict[str, Any]:
+        """Replace the current selection only if it still matches expected_text."""
+        try:
+            if not isinstance(expected_text, str) or not isinstance(replacement_text, str):
+                return {
+                    "success": False,
+                    "error": "expected_text and replacement_text must be strings",
+                }
+
+            text_range, selected_text = self._get_selected_text_range(doc)
+            if selected_text != expected_text:
+                return {
+                    "success": False,
+                    "error": "Selected text does not match expected_text; no changes made",
+                }
+
+            set_string = getattr(text_range, "setString", None)
+            if not callable(set_string):
+                return {
+                    "success": False,
+                    "error": "The selected text cannot be replaced",
+                }
+
+            set_string(replacement_text)
+            return {
+                "success": True,
+                "replaced_characters": len(selected_text),
+                "inserted_characters": len(replacement_text),
+            }
+        except Exception as e:
+            logger.error(f"Failed to replace selected text: {e}")
+            return {"success": False, "error": str(e)}
     
     def get_text_content(self, doc: Any = None) -> Dict[str, Any]:
         """Get text content from a document"""
@@ -306,6 +389,516 @@ class UNOBridge:
             logger.error(f"Failed to get text content: {e}")
             return {"success": False, "error": str(e)}
     
+    def search_document_elements(
+        self,
+        query: str,
+        document_identifier: Optional[str] = None,
+        max_results: int = 100,
+    ) -> Dict[str, Any]:
+        """Search an already-open document and return matching elements and formatting."""
+        if not isinstance(query, str) or not query:
+            return {"success": False, "error": "query must be a non-empty string"}
+        if (
+            isinstance(max_results, bool)
+            or not isinstance(max_results, int)
+            or max_results < 1
+            or max_results > self.MAX_SEARCH_RESULTS
+        ):
+            return {
+                "success": False,
+                "error": f"max_results must be an integer from 1 to {self.MAX_SEARCH_RESULTS}",
+            }
+
+        doc, error = self._resolve_search_document(document_identifier)
+        if error:
+            return {"success": False, "error": error}
+
+        try:
+            doc_type = self._get_document_type(doc)
+        except Exception as e:
+            return {"success": False, "error": f"Could not identify document type: {e}"}
+        matches: List[Dict[str, Any]] = []
+        truncated = False
+        extra: Dict[str, Any] = {}
+        try:
+            if doc_type == "writer":
+                truncated = self._search_writer_document(
+                    doc, query.casefold(), max_results, matches
+                )
+            elif doc_type == "calc":
+                truncated, cells_scanned = self._search_calc_document(
+                    doc, query.casefold(), max_results, matches
+                )
+                extra["cells_scanned"] = cells_scanned
+            elif doc_type in ("impress", "draw"):
+                truncated = self._search_draw_document(
+                    doc, query.casefold(), max_results, matches
+                )
+            else:
+                return {
+                    "success": False,
+                    "error": f"Search is not supported for document type '{doc_type}'",
+                }
+
+            return {
+                "success": True,
+                "document": {
+                    "title": self._document_title(doc),
+                    "url": self._document_url(doc),
+                    "type": doc_type,
+                },
+                "query": query,
+                "matches": matches,
+                "count": len(matches),
+                "truncated": truncated,
+                **extra,
+            }
+        except Exception as e:
+            logger.error(f"Failed to search document elements: {e}")
+            return {"success": False, "error": str(e)}
+
+    def _resolve_search_document(
+        self, document_identifier: Optional[str]
+    ) -> tuple[Optional[Any], Optional[str]]:
+        if document_identifier is None:
+            doc = self.get_active_document()
+            if doc is None:
+                return None, "No active document is available"
+            return doc, None
+
+        if not isinstance(document_identifier, str) or not document_identifier:
+            return None, "document_identifier must be a non-empty title or URL"
+
+        candidates = []
+        for doc in self._get_open_documents():
+            if (
+                document_identifier == self._document_url(doc)
+                or document_identifier == self._document_title(doc)
+            ):
+                candidates.append(doc)
+
+        if not candidates:
+            return (
+                None,
+                "No open document matches document_identifier; files are not opened by this tool",
+            )
+        if len(candidates) > 1:
+            return (
+                None,
+                "document_identifier matches multiple open documents; use an exact URL",
+            )
+        return candidates[0], None
+
+    def _get_open_documents(self) -> List[Any]:
+        """Return loaded document components without opening or changing them."""
+        documents = []
+        try:
+            components = self.desktop.getComponents()
+            enumeration = components.createEnumeration()
+            while enumeration.hasMoreElements():
+                documents.append(enumeration.nextElement())
+            return documents
+        except Exception:
+            pass
+
+        try:
+            frames = self.desktop.getFrames()
+            for index in range(frames.getCount()):
+                frame = frames.getByIndex(index)
+                controller = frame.getController()
+                if controller:
+                    doc = controller.getModel()
+                    if doc is not None and doc not in documents:
+                        documents.append(doc)
+        except Exception:
+            pass
+        return documents
+
+    @staticmethod
+    def _document_url(doc: Any) -> str:
+        try:
+            return str(doc.getURL()) if callable(getattr(doc, "getURL", None)) else ""
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _document_title(doc: Any) -> str:
+        try:
+            title = getattr(doc, "Title", "")
+            return str(title) if title else ""
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _enumerate_items(container: Any):
+        """Yield UNO enumeration or indexed-container elements."""
+        try:
+            create_enumeration = getattr(container, "createEnumeration", None)
+            if callable(create_enumeration):
+                enumeration = create_enumeration()
+                while enumeration.hasMoreElements():
+                    yield enumeration.nextElement()
+                return
+            get_count = getattr(container, "getCount", None)
+            get_by_index = getattr(container, "getByIndex", None)
+            if callable(get_count) and callable(get_by_index):
+                for index in range(get_count()):
+                    yield get_by_index(index)
+        except Exception:
+            return
+
+    @staticmethod
+    def _range_string(text_range: Any) -> Optional[str]:
+        try:
+            get_string = getattr(text_range, "getString", None)
+            if callable(get_string):
+                value = get_string()
+            else:
+                value = getattr(text_range, "String", None)
+            return value if isinstance(value, str) else None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _property(obj: Any, name: str) -> Any:
+        try:
+            return getattr(obj, name)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _json_value(value: Any) -> Any:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        try:
+            enum_value = getattr(value, "value")
+            if isinstance(enum_value, (str, int, float, bool)):
+                return enum_value
+        except Exception:
+            pass
+        return str(value)
+
+    def _formatting_metadata(self, obj: Any) -> Dict[str, Any]:
+        metadata: Dict[str, Any] = {}
+        property_names = {
+            "font_name": "CharFontName",
+            "font_size": "CharHeight",
+            "font_color": "CharColor",
+            "underline": "CharUnderline",
+            "cell_background": "CellBackColor",
+            "fill_color": "FillColor",
+            "line_color": "LineColor",
+            "line_width": "LineWidth",
+            "number_format": "NumberFormat",
+            "horizontal_alignment": "HoriJustify",
+            "vertical_alignment": "VertJustify",
+            "text_wrapped": "IsTextWrapped",
+        }
+        for output_name, property_name in property_names.items():
+            value = self._property(obj, property_name)
+            if value is not None:
+                metadata[output_name] = self._json_value(value)
+
+        weight = self._property(obj, "CharWeight")
+        if weight is not None:
+            safe_weight = self._json_value(weight)
+            metadata["font_weight"] = safe_weight
+            try:
+                metadata["bold"] = float(weight) >= 150
+            except (TypeError, ValueError):
+                metadata["bold"] = "BOLD" in str(weight).upper()
+
+        posture = self._property(obj, "CharPosture")
+        if posture is not None:
+            safe_posture = self._json_value(posture)
+            metadata["font_posture"] = safe_posture
+            try:
+                metadata["italic"] = int(posture) in (2, 5)
+            except (TypeError, ValueError):
+                metadata["italic"] = "ITALIC" in str(posture).upper()
+        return metadata
+
+    def _text_runs(self, text_element: Any) -> List[Dict[str, Any]]:
+        runs = []
+        for portion in self._enumerate_items(text_element):
+            text = self._range_string(portion)
+            if not text:
+                continue
+            run = {"text": text}
+            formatting = self._formatting_metadata(portion)
+            if formatting:
+                run["formatting"] = formatting
+            runs.append(run)
+        return runs
+
+    def _search_writer_document(
+        self,
+        doc: Any,
+        query: str,
+        max_results: int,
+        matches: List[Dict[str, Any]],
+    ) -> bool:
+        return self._search_writer_text(
+            doc.getText(), query, max_results, matches, {"section": "body"}
+        )
+
+    def _search_writer_text(
+        self,
+        text: Any,
+        query: str,
+        max_results: int,
+        matches: List[Dict[str, Any]],
+        location: Dict[str, Any],
+    ) -> bool:
+        paragraph_index = 0
+        for element in self._enumerate_items(text):
+            get_cell_names = getattr(element, "getCellNames", None)
+            get_cell_by_name = getattr(element, "getCellByName", None)
+            if callable(get_cell_names) and callable(get_cell_by_name):
+                table_name = self._property(element, "Name")
+                if not table_name:
+                    try:
+                        table_name = element.getName()
+                    except Exception:
+                        table_name = "table"
+                for cell_name in get_cell_names():
+                    try:
+                        cell_text = element.getCellByName(cell_name).getText()
+                    except Exception:
+                        continue
+                    table_location = {
+                        "section": "table",
+                        "table": str(table_name),
+                        "cell": str(cell_name),
+                    }
+                    if self._search_writer_text(
+                        cell_text, query, max_results, matches, table_location
+                    ):
+                        return True
+                continue
+
+            text_value = self._range_string(element)
+            if text_value is None:
+                continue
+            paragraph_index += 1
+            if query not in text_value.casefold():
+                continue
+            if len(matches) >= max_results:
+                return True
+
+            formatting = self._formatting_metadata(element)
+            paragraph_style = self._property(element, "ParaStyleName")
+            outline_level = self._property(element, "OutlineLevel")
+            alignment = self._property(element, "ParaAdjust")
+            paragraph_formatting = {}
+            if paragraph_style is not None:
+                paragraph_formatting["style"] = self._json_value(paragraph_style)
+            if outline_level is not None:
+                paragraph_formatting["outline_level"] = self._json_value(outline_level)
+            if alignment is not None:
+                paragraph_formatting["alignment"] = self._json_value(alignment)
+            if formatting:
+                paragraph_formatting["character_defaults"] = formatting
+
+            result_location = dict(location)
+            result_location["paragraph"] = paragraph_index
+            match = {
+                "element_type": "paragraph",
+                "text": text_value,
+                "location": result_location,
+                "formatting": paragraph_formatting,
+            }
+            runs = self._text_runs(element)
+            if runs:
+                match["runs"] = runs
+            matches.append(match)
+        return False
+
+    def _search_calc_document(
+        self,
+        doc: Any,
+        query: str,
+        max_results: int,
+        matches: List[Dict[str, Any]],
+    ) -> tuple[bool, int]:
+        sheets = doc.getSheets()
+        cells_scanned = 0
+        for sheet_index in range(sheets.getCount()):
+            sheet = sheets.getByIndex(sheet_index)
+            sheet_name = str(sheet.getName())
+            cursor = sheet.createCursor()
+            cursor.gotoStartOfUsedArea(False)
+            cursor.gotoEndOfUsedArea(True)
+            address = cursor.getRangeAddress()
+            start_column = int(address.StartColumn)
+            end_column = int(address.EndColumn)
+            start_row = int(address.StartRow)
+            end_row = int(address.EndRow)
+
+            for row in range(start_row, end_row + 1):
+                for column in range(start_column, end_column + 1):
+                    if cells_scanned >= self.MAX_CALC_CELLS_TO_SCAN:
+                        return True, cells_scanned
+                    cells_scanned += 1
+                    cell = sheet.getCellByPosition(column, row)
+                    displayed_value = self._range_string(cell)
+                    if displayed_value is None:
+                        displayed_value = ""
+                    try:
+                        formula_value = str(cell.getFormula())
+                    except Exception:
+                        formula_value = ""
+
+                    matched_fields = []
+                    if query in displayed_value.casefold():
+                        matched_fields.append("displayed_value")
+                    if (
+                        formula_value.startswith("=")
+                        and query in formula_value.casefold()
+                    ):
+                        matched_fields.append("formula")
+                    if not matched_fields:
+                        continue
+                    if len(matches) >= max_results:
+                        return True, cells_scanned
+
+                    cell_address = f"{self._calc_column_name(column)}{row + 1}"
+                    formatting = self._formatting_metadata(cell)
+                    cell_style = self._property(cell, "CellStyle")
+                    if cell_style is not None:
+                        formatting["style"] = self._json_value(cell_style)
+                    matches.append(
+                        {
+                            "element_type": "cell",
+                            "text": displayed_value,
+                            "value": displayed_value,
+                            "formula": (
+                                formula_value
+                                if formula_value.startswith("=")
+                                else None
+                            ),
+                            "matched_fields": matched_fields,
+                            "location": {
+                                "sheet": sheet_name,
+                                "cell": cell_address,
+                                "sheet_index": sheet_index + 1,
+                            },
+                            "formatting": formatting,
+                        }
+                    )
+        return False, cells_scanned
+
+    @staticmethod
+    def _calc_column_name(column: int) -> str:
+        name = ""
+        while column >= 0:
+            column, remainder = divmod(column, 26)
+            name = chr(65 + remainder) + name
+            column -= 1
+        return name
+
+    def _search_draw_document(
+        self,
+        doc: Any,
+        query: str,
+        max_results: int,
+        matches: List[Dict[str, Any]],
+    ) -> bool:
+        pages = doc.getDrawPages()
+        for page_index in range(pages.getCount()):
+            page = pages.getByIndex(page_index)
+            for shape_index in range(page.getCount()):
+                shape = page.getByIndex(shape_index)
+                try:
+                    shape_type = str(shape.getShapeType())
+                except Exception:
+                    shape_type = ""
+                if shape_type.endswith("GroupShape"):
+                    if self._search_shape_group(
+                        shape,
+                        query,
+                        max_results,
+                        matches,
+                        page_index + 1,
+                        f"{shape_index + 1}",
+                    ):
+                        return True
+                    continue
+                if self._append_shape_match(
+                    shape,
+                    query,
+                    max_results,
+                    matches,
+                    page_index + 1,
+                    str(shape_index + 1),
+                ):
+                    return True
+        return False
+
+    def _search_shape_group(
+        self,
+        group: Any,
+        query: str,
+        max_results: int,
+        matches: List[Dict[str, Any]],
+        page_number: int,
+        shape_path: str,
+    ) -> bool:
+        for child_index in range(group.getCount()):
+            child = group.getByIndex(child_index)
+            path = f"{shape_path}.{child_index + 1}"
+            try:
+                shape_type = str(child.getShapeType())
+            except Exception:
+                shape_type = ""
+            if shape_type.endswith("GroupShape"):
+                if self._search_shape_group(
+                    child, query, max_results, matches, page_number, path
+                ):
+                    return True
+            elif self._append_shape_match(
+                child, query, max_results, matches, page_number, path
+            ):
+                return True
+        return False
+
+    def _append_shape_match(
+        self,
+        shape: Any,
+        query: str,
+        max_results: int,
+        matches: List[Dict[str, Any]],
+        page_number: int,
+        shape_path: str,
+    ) -> bool:
+        text_value = self._range_string(shape)
+        if not text_value or query not in text_value.casefold():
+            return False
+        if len(matches) >= max_results:
+            return True
+
+        try:
+            shape_type = str(shape.getShapeType())
+        except Exception:
+            shape_type = "unknown"
+        shape_name = self._property(shape, "Name")
+        result = {
+            "element_type": "shape",
+            "text": text_value,
+            "location": {
+                "page": page_number,
+                "shape": str(shape_name) if shape_name else shape_path,
+                "shape_index": shape_path,
+            },
+            "formatting": self._formatting_metadata(shape),
+            "shape_type": shape_type,
+        }
+        runs = self._text_runs(shape)
+        if runs:
+            result["runs"] = runs
+        matches.append(result)
+        return False
+
     def _get_document_type(self, doc: Any) -> str:
         """Determine document type"""
         if doc.supportsService("com.sun.star.text.TextDocument"):
@@ -314,6 +907,8 @@ class UNOBridge:
             return "calc"
         elif doc.supportsService("com.sun.star.presentation.PresentationDocument"):
             return "impress"
+        elif doc.supportsService("com.sun.star.drawing.DrawingDocument"):
+            return "draw"
         else:
             return "unknown"
     

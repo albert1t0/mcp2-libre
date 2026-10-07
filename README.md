@@ -4,7 +4,7 @@ A comprehensive Model Context Protocol (MCP) server that provides tools and reso
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![LibreOffice](https://img.shields.io/badge/LibreOffice-24.2+-green.svg)](https://www.libreoffice.org/)
-[![MCP Protocol](https://img.shields.io/badge/MCP-2024--11--05-orange.svg)](https://spec.modelcontextprotocol.io/)
+[![MCP Python SDK](https://img.shields.io/badge/MCP%20Python%20SDK-2.x-orange.svg)](https://github.com/modelcontextprotocol/python-sdk)
 
 ## 📂 Repository Structure
 
@@ -22,12 +22,13 @@ For detailed information, see [`docs/REPOSITORY_STRUCTURE.md`](docs/REPOSITORY_S
 ## 🚀 Features
 
 ### LibreOffice Extension (Plugin) - NEW! 🎉
-- **Native Integration**: Embedded MCP server directly in LibreOffice
+- **Native Integration**: Embedded document tools with direct UNO API access
 - **Real-time Editing**: Live document manipulation with instant visual feedback
-- **Performance**: 10x faster than external server (direct UNO API access)
 - **Multi-document**: Work with all open LibreOffice documents
+- **Live Search**: Search open Writer, Calc, Impress, and Draw documents and inspect matching elements and formatting
 - **Auto-start**: Automatically available when LibreOffice starts
-- **HTTP API**: External AI assistant access via localhost:8765
+- **HTTP API**: Local REST API at `http://localhost:8765`
+- **Status Dialog**: Check server, extension, listener, and health endpoint status in LibreOffice
 
 ### Document Operations
 - **Create Documents**: New Writer, Calc, Impress, and Draw documents
@@ -104,7 +105,7 @@ For detailed installation instructions for all platforms, run:
 
 ### Start MCP Server
 ```bash
-# Standard MCP mode (stdio)
+# Standard MCP mode (stdio, using MCP Python SDK 2.x)
 python src/main.py
 
 # Or using UV
@@ -161,7 +162,7 @@ python src/main.py --test
 
 ### 1. LibreOffice Extension (NEW - Recommended!) 🎉
 
-**The most powerful and efficient way to use the MCP server:**
+**Use the extension to work directly with documents open in LibreOffice:**
 
 ```bash
 # Build and install the LibreOffice extension
@@ -173,20 +174,44 @@ cd plugin/
 ```
 
 **Benefits of the Extension:**
-- **10x Performance**: Direct UNO API access (no subprocess overhead)
+- **Direct UNO access**: Work with open documents without file conversion or subprocesses
 - **Real-time Editing**: Live document manipulation in open LibreOffice windows
 - **Native Integration**: Appears in LibreOffice Tools menu
 - **Multi-document Support**: Work with all open documents simultaneously
 - **Auto-start**: Automatically starts with LibreOffice
-- **Advanced Features**: Full access to LibreOffice formatting and capabilities
+- **Status Dialog**: View server and HTTP listener status in LibreOffice
 
 **Usage:**
-- The extension provides an HTTP API on `http://localhost:8765`
-- Configure your AI assistant to use this endpoint
+- The extension provides a local REST API on `http://localhost:8765`
+- Call it with an HTTP client or connect through a compatible MCP-to-REST bridge
 - Access controls via **Tools > MCP Server** in LibreOffice
 - Real-time document editing with instant visual feedback
 
 For detailed plugin information, see [`plugin/README.md`](plugin/README.md).
+
+#### Read-only live search
+
+The live bridge exposes `search_document_elements_live` for text inspection in a
+document that is already open in LibreOffice. Open the document first, then call
+the tool from Warp. Omit `document_identifier` to search the active document; to
+target another open document, pass its exact title or URL (use
+`list_open_documents` to see available documents). This tool does not open,
+modify, or save files.
+
+```json
+{
+  "query": "budget",
+  "max_results": 100
+}
+```
+
+The search is a case-insensitive substring match. Results include each matching
+element's text, location, type, and relevant formatting: paragraph/style and
+character runs in Writer; sheet/cell address, formula, style, and number format
+in Calc; page/slide and shape metadata in Impress and Draw. `max_results`
+defaults to 100 (maximum 500); `truncated` indicates that more matches exist or
+Calc's scan limit was reached. The live tool is provided by the extension-backed
+Warp bridge, not by the standalone file-search tool `search_documents`.
 
 ### 2. Claude Desktop
 
@@ -209,18 +234,15 @@ npx @srbhptl39/mcp-superassistant-proxy@latest --config ~/Documents/mcp/mcp.conf
 # Server URL: http://localhost:3006
 ```
 
-### 4. Direct MCP Client
-```python
-from mcp.shared.memory import create_connected_server_and_client_session
-from libremcp import mcp
+### MCP Client Integration
 
-async with client_session(mcp._mcp_server) as client:
-    result = await client.call_tool("create_document", {
-        "path": "/tmp/test.odt",
-        "doc_type": "writer",
-        "content": "Hello, World!"
-    })
-```
+The standalone server communicates with MCP clients over stdio. Generate a client
+configuration with `./generate-config.sh claude`, or configure the client to launch
+`python src/main.py` from the project directory.
+
+The LibreOffice extension is a separate integration: it exposes a local REST API,
+not the MCP stdio/HTTP protocol transport. A client that speaks MCP cannot connect
+to the extension endpoint directly without a compatible bridge.
 
 ## 🎨 Usage Examples
 
@@ -231,19 +253,9 @@ async with client_session(mcp._mcp_server) as client:
 - *"Get statistics for my essay - how many words?"*
 
 ### Programmatic Usage
-```python
-from libremcp import create_document, read_document_text, convert_document
-
-# Create a document
-doc = create_document("/tmp/report.odt", "writer", "Project Report")
-
-# Read content
-content = read_document_text("/tmp/report.odt")
-print(f"Words: {content.word_count}")
-
-# Convert to PDF
-result = convert_document("/tmp/report.odt", "/tmp/report.pdf", "pdf")
-```
+Use the standalone MCP server from an MCP client to invoke tools such as
+`create_document`, `read_document_text`, and `convert_document`. The server is
+launched in stdio mode with `uv run python src/main.py`.
 
 ## 📁 Supported File Formats
 
@@ -335,7 +347,7 @@ search_paths = [
 
 - **Local Execution**: All operations run locally
 - **File Permissions**: Limited to user's file access
-- **No Network**: No external network dependencies
+- **Extension API**: Binds to `localhost:8765`; it has no authentication, so do not expose it beyond a trusted local environment
 - **Temporary Files**: Automatically cleaned up
 
 ## 🚨 Troubleshooting
