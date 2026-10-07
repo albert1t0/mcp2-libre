@@ -57,6 +57,51 @@ class FakeParagraph(FakeContainer):
     def getString(self):
         return self.text
 
+    def getText(self):
+        return self
+
+    def getStart(self):
+        return self
+
+    def createTextCursorByRange(self, text_range):
+        return FakeTextCursor(self)
+
+
+class FakeTextCursor:
+    def __init__(self, paragraph):
+        self.paragraph = paragraph
+        self.position = 0
+        self.anchor = None
+
+    def _unit_to_index(self, units):
+        return units if 0 <= units <= len(self.paragraph.text) else None
+
+    def goRight(self, count, expand):
+        target = self.position + count
+        if self._unit_to_index(target) is None:
+            return False
+        if expand:
+            if self.anchor is None:
+                self.anchor = self.position
+        else:
+            self.anchor = None
+        self.position = target
+        return True
+
+    def getString(self):
+        if self.anchor is None:
+            return ""
+        start = self._unit_to_index(min(self.anchor, self.position))
+        end = self._unit_to_index(max(self.anchor, self.position))
+        return self.paragraph.text[start:end]
+
+    def setString(self, value):
+        start = self._unit_to_index(min(self.anchor, self.position))
+        end = self._unit_to_index(max(self.anchor, self.position))
+        self.paragraph.text = self.paragraph.text[:start] + value + self.paragraph.text[end:]
+        self.position = self.anchor + len(value)
+        self.anchor = None
+
 
 class FakeTable:
     def __init__(self, name, cells):
@@ -440,6 +485,162 @@ def test_search_result_limit_sets_truncated(monkeypatch):
     assert result["count"] == 1
     assert result["truncated"] is True
 
+def test_heading_search_finds_styles_and_outline_levels(monkeypatch):
+    document = FakeDocument(
+        "writer",
+        text=FakeContainer(
+            [
+                FakeParagraph("Preamble"),
+                FakeParagraph("Overview", ParaStyleName="Heading 1", OutlineLevel=0),
+                FakeParagraph("Details", ParaStyleName="Custom section", OutlineLevel=2),
+                FakeParagraph("Not a heading", ParaStyleName="Text Body", OutlineLevel=0),
+                FakeParagraph("Title", ParaStyleName="Title", OutlineLevel=0),
+            ]
+        ),
+    )
+    bridge = make_bridge(monkeypatch, [document], document)
+
+    result = bridge.search_document_headings()
+    filtered = bridge.search_document_headings(query="DETAIL")
+
+    assert result["success"] is True
+    assert [match["text"] for match in result["matches"]] == [
+        "Overview",
+        "Details",
+        "Title",
+    ]
+    assert [match["location"]["paragraph"] for match in result["matches"]] == [
+        2,
+        3,
+        5,
+    ]
+    assert result["matches"][0]["formatting"]["style"] == "Heading 1"
+    assert filtered["count"] == 1
+    assert filtered["matches"][0]["text"] == "Details"
+
+
+def test_heading_search_limit_and_writer_only_validation(monkeypatch):
+    document = FakeDocument(
+        "writer",
+        text=FakeContainer(
+            [
+                FakeParagraph("First", ParaStyleName="Heading 1"),
+                FakeParagraph("Second", ParaStyleName="Heading 2"),
+            ]
+        ),
+    )
+    calc = FakeDocument("calc", url="file:///calc")
+    bridge = make_bridge(monkeypatch, [document, calc], document)
+
+    limited = bridge.search_document_headings(max_results=1)
+    unsupported = bridge.search_document_headings(document_identifier=calc.url)
+
+    assert limited["count"] == 1
+    assert limited["truncated"] is True
+    assert unsupported["success"] is False
+    assert "only supported for Writer" in unsupported["error"]
+
+
+def make_edit(paragraph, paragraph_number, search_text, replacement_text):
+    return {
+        "location": {"section": "body", "paragraph": paragraph_number},
+        "expected_text": paragraph.getString(),
+        "expected_style": paragraph.ParaStyleName,
+        "search_text": search_text,
+        "replacement_text": replacement_text,
+    }
+
+
+def test_batch_replacement_dry_run_does_not_mutate(monkeypatch):
+    heading = FakeParagraph(
+        "🎯 Agenda sugerida",
+        ParaStyleName="Heading 1",
+        OutlineLevel=0,
+    )
+    document = FakeDocument("writer", text=FakeContainer([heading]))
+    bridge = make_bridge(monkeypatch, [document], document)
+
+    result = bridge.replace_document_elements(
+        [make_edit(heading, 1, "🎯 ", "")]
+    )
+
+    assert result["success"] is True
+    assert result["dry_run"] is True
+    assert result["saved"] is False
+    assert result["changes"][0]["after"] == "Agenda sugerida"
+    assert result["changes"][0]["status"] == "preview"
+    assert heading.getString() == "🎯 Agenda sugerida"
+
+
+def test_batch_replacement_applies_verified_ranges_in_unicode_text(monkeypatch):
+    first = FakeParagraph("🎯 Agenda sugerida", ParaStyleName="Heading 1")
+    second = FakeParagraph("Proyectos 🚀 DIAD", ParaStyleName="Heading 2")
+    document = FakeDocument("writer", text=FakeContainer([first, second]))
+    bridge = make_bridge(monkeypatch, [document], document)
+
+    result = bridge.replace_document_elements(
+        [
+            make_edit(first, 1, "🎯 ", ""),
+            make_edit(second, 2, "🚀 ", ""),
+        ],
+        dry_run=False,
+    )
+
+    assert result["success"] is True
+    assert result["dry_run"] is False
+    assert result["saved"] is False
+    assert first.getString() == "Agenda sugerida"
+    assert second.getString() == "Proyectos DIAD"
+    assert [change["status"] for change in result["changes"]] == [
+        "applied",
+        "applied",
+    ]
+
+
+def test_batch_preflight_rejects_stale_or_wrong_style_without_partial_edit(monkeypatch):
+    stale = FakeParagraph("Changed heading", ParaStyleName="Heading 1")
+    wrong_style = FakeParagraph("Changed style", ParaStyleName="Heading 2")
+    valid = FakeParagraph("🎯 Agenda", ParaStyleName="Heading 3")
+    document = FakeDocument("writer", text=FakeContainer([stale, wrong_style, valid]))
+    bridge = make_bridge(monkeypatch, [document], document)
+    stale_edit = make_edit(stale, 1, "heading", "")
+    stale_edit["expected_text"] = "Old heading"
+    style_edit = make_edit(wrong_style, 2, "Changed", "")
+    style_edit["expected_style"] = "Heading 1"
+
+    result = bridge.replace_document_elements(
+        [stale_edit, style_edit, make_edit(valid, 3, "🎯 ", "")],
+        dry_run=False,
+    )
+
+    assert result["success"] is False
+    assert "no changes made" in result["error"]
+    assert stale.getString() == "Changed heading"
+    assert wrong_style.getString() == "Changed style"
+    assert valid.getString() == "🎯 Agenda"
+
+
+def test_batch_replacement_rejects_ambiguous_and_duplicate_targets(monkeypatch):
+    paragraph = FakeParagraph(
+        "Icon 🎯 and 🎯",
+        ParaStyleName="Heading 1",
+    )
+    document = FakeDocument("writer", text=FakeContainer([paragraph]))
+    bridge = make_bridge(monkeypatch, [document], document)
+    ambiguous = make_edit(paragraph, 1, "🎯", "")
+    duplicate = make_edit(paragraph, 1, "Icon", "")
+
+    ambiguous_result = bridge.replace_document_elements([ambiguous], dry_run=False)
+    duplicate_result = bridge.replace_document_elements(
+        [duplicate, duplicate], dry_run=False
+    )
+
+    assert ambiguous_result["success"] is False
+    assert "exactly once" in ambiguous_result["errors"][0]["error"]
+    assert duplicate_result["success"] is False
+    assert "one edit per paragraph" in duplicate_result["errors"][0]["error"]
+    assert paragraph.getString() == "Icon 🎯 and 🎯"
+
 
 def test_calc_scan_budget_sets_truncated(monkeypatch):
     sheet = FakeSheet(
@@ -474,6 +675,27 @@ def test_plugin_rest_registers_and_executes_live_search(monkeypatch):
                 "document_identifier": document_identifier,
                 "max_results": max_results,
             }
+        def search_document_headings(
+            self, query=None, document_identifier=None, max_results=100
+        ):
+            return {
+                "success": True,
+                "query": query,
+                "document_identifier": document_identifier,
+                "max_results": max_results,
+                "matches": [],
+            }
+
+        def replace_document_elements(
+            self, edits, document_identifier=None, dry_run=True
+        ):
+            return {
+                "success": True,
+                "edits": edits,
+                "document_identifier": document_identifier,
+                "dry_run": dry_run,
+                "saved": False,
+            }
 
     bridge_module.UNOBridge = FakeUNOBridge
     monkeypatch.setitem(sys.modules, bridge_module.__name__, bridge_module)
@@ -505,6 +727,14 @@ def test_plugin_rest_registers_and_executes_live_search(monkeypatch):
             tool for tool in tools if tool["name"] == "search_document_elements_live"
         )
         assert tool["parameters"]["required"] == ["query"]
+        heading_tool = next(
+            tool for tool in tools if tool["name"] == "search_document_headings_live"
+        )
+        assert "query" not in heading_tool["parameters"].get("required", [])
+        replacement_tool = next(
+            tool for tool in tools if tool["name"] == "replace_document_elements_live"
+        )
+        assert replacement_tool["parameters"]["properties"]["dry_run"]["default"] is True
 
         request = Request(
             f"{base_url}/tools/search_document_elements_live",
@@ -520,12 +750,58 @@ def test_plugin_rest_registers_and_executes_live_search(monkeypatch):
         )
         with urlopen(request, timeout=2) as response:
             result = json.load(response)
+        heading_request = Request(
+            f"{base_url}/tools/search_document_headings_live",
+            data=json.dumps(
+                {
+                    "query": "Agenda",
+                    "document_identifier": "file:///target",
+                    "max_results": 4,
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(heading_request, timeout=2) as response:
+            heading_result = json.load(response)
+
+        edits = [
+            {
+                "location": {"section": "body", "paragraph": 3},
+                "expected_text": "🎯 Agenda",
+                "expected_style": "Heading 1",
+                "search_text": "🎯 ",
+                "replacement_text": "",
+            }
+        ]
+        replacement_request = Request(
+            f"{base_url}/tools/replace_document_elements_live",
+            data=json.dumps({"edits": edits, "dry_run": False}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(replacement_request, timeout=2) as response:
+            replacement_result = json.load(response)
 
         assert result == {
             "success": True,
             "query": "heading",
             "document_identifier": "file:///target",
             "max_results": 7,
+        }
+        assert heading_result == {
+            "success": True,
+            "query": "Agenda",
+            "document_identifier": "file:///target",
+            "max_results": 4,
+            "matches": [],
+        }
+        assert replacement_result == {
+            "success": True,
+            "edits": edits,
+            "document_identifier": None,
+            "dry_run": False,
+            "saved": False,
         }
     finally:
         interface.stop()

@@ -40,6 +40,8 @@ async def test_tools_are_registered_and_forward_calls(monkeypatch):
             "export_document_live",
             "get_text_content_live",
             "search_document_elements_live",
+            "search_document_headings_live",
+            "replace_document_elements_live",
             "get_selected_text_live",
             "replace_selected_text_live",
             "list_open_documents",
@@ -52,6 +54,27 @@ async def test_tools_are_registered_and_forward_calls(monkeypatch):
         await client.call_tool(
             "replace_selected_text_live",
             {"expected_text": "old", "replacement_text": "new"},
+        )
+        await client.call_tool(
+            "search_document_headings_live",
+            {
+                "query": "Agenda",
+                "document_identifier": "file:///target",
+                "max_results": 8,
+            },
+        )
+        edits = [
+            {
+                "location": {"section": "body", "paragraph": 3},
+                "expected_text": "🎯 Agenda",
+                "expected_style": "Heading 1",
+                "search_text": "🎯 ",
+                "replacement_text": "",
+            }
+        ]
+        await client.call_tool(
+            "replace_document_elements_live",
+            {"edits": edits, "document_identifier": "file:///target", "dry_run": False},
         )
 
     assert not result.is_error
@@ -69,6 +92,24 @@ async def test_tools_are_registered_and_forward_calls(monkeypatch):
         (
             "http://localhost:8765/tools/replace_selected_text_live",
             {"expected_text": "old", "replacement_text": "new"},
+            bridge.REQUEST_TIMEOUT,
+        ),
+        (
+            "http://localhost:8765/tools/search_document_headings_live",
+            {
+                "max_results": 8,
+                "query": "Agenda",
+                "document_identifier": "file:///target",
+            },
+            bridge.REQUEST_TIMEOUT,
+        ),
+        (
+            "http://localhost:8765/tools/replace_document_elements_live",
+            {
+                "edits": edits,
+                "dry_run": False,
+                "document_identifier": "file:///target",
+            },
             bridge.REQUEST_TIMEOUT,
         ),
     ]

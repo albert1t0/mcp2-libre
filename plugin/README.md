@@ -119,6 +119,8 @@ curl -X POST http://localhost:8765/execute \
 - `format_text_live`: Apply formatting to selected text
 - `get_text_content_live`: Extract text content from document
 - `search_document_elements_live`: Search open documents and inspect matching text with location and formatting
+- `search_document_headings_live`: Enumerate Writer headings and return body paragraph locations, styles, and outline levels
+- `replace_document_elements_live`: Preview or apply guarded exact-substring replacements to Writer body paragraphs
 
 ### **Document Information**
 - `get_document_info_live`: Get comprehensive document details
@@ -221,6 +223,44 @@ the project's `libreoffice-live` Warp bridge; the extension endpoint itself is a
 local REST API, not an MCP protocol transport. Refresh the bridge after installing
 or updating the extension.
 
+### **Heading Search and Guarded Batch Replacement**
+
+`search_document_headings_live` lists heading paragraphs in the active Writer
+document, or in another already-open document selected by its exact title or URL.
+An optional `query` filters the results case-insensitively. Each result includes
+a body `paragraph` location, full text, paragraph style, and outline level.
+
+`replace_document_elements_live` accepts edits based on those paragraph locations.
+Every edit must provide the exact current paragraph text and style plus a
+`search_text` substring that occurs exactly once. All locations and text ranges
+are preflighted before mutation; stale text/styles, duplicate paragraph targets,
+or ambiguous matches reject the complete batch. Only body paragraphs are editable.
+
+```bash
+# Enumerate Writer headings
+curl -X POST http://localhost:8765/tools/search_document_headings_live \
+  -H "Content-Type: application/json" \
+  -d '{"max_results":100}'
+
+# Preview removing an icon and its trailing space from one heading
+curl -X POST http://localhost:8765/tools/replace_document_elements_live \
+  -H "Content-Type: application/json" \
+  -d '{
+    "edits": [{
+      "location": {"section":"body","paragraph":3},
+      "expected_text": "🎯 Agenda sugerida",
+      "expected_style": "Heading 1",
+      "search_text": "🎯 ",
+      "replacement_text": ""
+    }],
+    "dry_run": true
+  }'
+```
+
+`dry_run` defaults to `true`. Review the preview before calling again with
+`dry_run: false` to apply the changes. Editing changes the in-memory Writer
+document only; the tools never save it automatically.
+
 ## 🔄 Comparison with External MCP Server
 | Capability | Standalone server | Extension |
 |------------|------------------|-----------|
@@ -296,6 +336,22 @@ unopkg add ../build/libreoffice-mcp-extension.oxt
 - Check Python console output
 - Monitor HTTP server logs
 - Use UNO reflection tools
+
+### **Real UNO Integration Test**
+
+To test the source bridge against LibreOffice without attaching to the current
+session, run `tests/integration_live_tools_uno.py` with a Python interpreter
+that provides the UNO module:
+
+```bash
+/usr/bin/python3 tests/integration_live_tools_uno.py
+```
+
+The script launches an isolated headless LibreOffice process and temporary
+profile, tests heading discovery and guarded replacement in an unsaved temporary
+Writer document, and disposes it without saving. Set `LIBREOFFICE_BIN` if the
+LibreOffice executable is not on `PATH`. The REST registration and stdio bridge
+are tested separately by the repository's `pytest -q` suite.
 
 ## 📜 License
 

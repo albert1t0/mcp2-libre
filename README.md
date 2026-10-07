@@ -25,7 +25,7 @@ For detailed information, see [`docs/REPOSITORY_STRUCTURE.md`](docs/REPOSITORY_S
 - **Native Integration**: Embedded document tools with direct UNO API access
 - **Real-time Editing**: Live document manipulation with instant visual feedback
 - **Multi-document**: Work with all open LibreOffice documents
-- **Live Search**: Search open Writer, Calc, Impress, and Draw documents and inspect matching elements and formatting
+- **Live Search and Editing**: Search open documents, enumerate Writer headings, and preview guarded batch text replacements
 - **Auto-start**: Automatically available when LibreOffice starts
 - **HTTP API**: Local REST API at `http://localhost:8765`
 - **Status Dialog**: Check server, extension, listener, and health endpoint status in LibreOffice
@@ -213,6 +213,37 @@ defaults to 100 (maximum 500); `truncated` indicates that more matches exist or
 Calc's scan limit was reached. The live tool is provided by the extension-backed
 Warp bridge, not by the standalone file-search tool `search_documents`.
 
+#### Live heading search and guarded replacement
+
+Use `search_document_headings_live` to enumerate Writer headings without first
+knowing their text. It can optionally filter by a case-insensitive `query` and
+returns body paragraph locations, styles, and outline levels. Use those values
+with `replace_document_elements_live` to prepare exact substring replacements.
+Each edit must include the location, exact full paragraph text and style, the
+substring to replace (exactly once), and replacement text. The entire batch is
+checked before any text changes; stale text, styles, duplicate paragraph targets,
+or ambiguous substrings reject the batch.
+
+Replacement defaults to `dry_run: true`, which returns a preview without changing
+the document. Set `dry_run` to `false` to apply the verified changes. These tools
+operate only on a Writer document that is already open, only target body
+paragraphs, and never save the document automatically.
+
+```json
+{
+  "edits": [
+    {
+      "location": { "section": "body", "paragraph": 3 },
+      "expected_text": "🎯 Agenda sugerida",
+      "expected_style": "Heading 1",
+      "search_text": "🎯 ",
+      "replacement_text": ""
+    }
+  ],
+  "dry_run": true
+}
+```
+
 ### 2. Claude Desktop
 
 Generate configuration automatically:
@@ -283,6 +314,23 @@ cd plugin/
 ./install.sh status     # Check status
 ./install.sh interactive # Interactive testing mode
 ```
+
+### Real LibreOffice UNO Integration Test
+
+Run the UNO smoke test with a Python interpreter that can import LibreOffice's
+`uno` module and with LibreOffice available on `PATH`:
+
+```bash
+/usr/bin/python3 tests/integration_live_tools_uno.py
+```
+
+If LibreOffice is not on `PATH`, set `LIBREOFFICE_BIN` to its executable path.
+The script starts a separate headless LibreOffice process with a temporary user
+profile, creates a temporary unsaved Writer document, verifies heading search,
+dry-run, emoji substring replacement, and stale-edit rejection, then disposes
+the document without saving. It never attaches to or restarts an existing
+LibreOffice session. This directly exercises the source UNO bridge; the REST
+tool registration and stdio forwarding are covered by `pytest -q`.
 
 ### External Server Testing
 ```bash

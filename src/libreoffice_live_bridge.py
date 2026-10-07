@@ -116,6 +116,42 @@ def search_document_elements_live(
         parameters["document_identifier"] = document_identifier
     return _execute_tool("search_document_elements_live", parameters)
 
+@mcp.tool(
+    description=(
+        "List heading paragraphs in an already-open Writer document, optionally "
+        "filtered by text. Returns body paragraph locations usable by the guarded "
+        "replacement tool; does not edit or save."
+    )
+)
+def search_document_headings_live(
+    query: str | None = None,
+    document_identifier: str | None = None,
+    max_results: int = 100,
+) -> dict[str, Any]:
+    parameters: dict[str, Any] = {"max_results": max_results}
+    if query is not None:
+        parameters["query"] = query
+    if document_identifier is not None:
+        parameters["document_identifier"] = document_identifier
+    return _execute_tool("search_document_headings_live", parameters)
+
+
+@mcp.tool(
+    description=(
+        "Replace exact substrings in open Writer body paragraphs after checking "
+        "expected paragraph text and style. Previews by default and never saves."
+    )
+)
+def replace_document_elements_live(
+    edits: list[dict[str, Any]],
+    document_identifier: str | None = None,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    parameters: dict[str, Any] = {"edits": edits, "dry_run": dry_run}
+    if document_identifier is not None:
+        parameters["document_identifier"] = document_identifier
+    return _execute_tool("replace_document_elements_live", parameters)
+
 
 @mcp.tool(description="Read the text currently selected in the active Writer document.")
 def get_selected_text_live() -> dict[str, Any]:

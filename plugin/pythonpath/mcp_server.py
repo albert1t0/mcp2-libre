@@ -185,6 +185,117 @@ class LibreOfficeMCPServer:
             "handler": self.search_document_elements_live
         }
 
+        self.tools["search_document_headings_live"] = {
+            "description": (
+                "List heading paragraphs in an already-open Writer document, optionally "
+                "filtered by text. Results include paragraph locations usable by the "
+                "guarded replacement tool; this tool never edits or saves."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Optional case-insensitive text filter",
+                    },
+                    "document_identifier": {
+                        "type": "string",
+                        "description": (
+                            "Exact title or URL of an already-open document; "
+                            "omit to use the active document"
+                        ),
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 500,
+                        "default": 100,
+                        "description": "Maximum heading paragraphs to return",
+                    },
+                },
+            },
+            "handler": self.search_document_headings_live,
+        }
+
+        self.tools["replace_document_elements_live"] = {
+            "description": (
+                "Replace exact substrings in body paragraphs of an already-open Writer "
+                "document. Every edit must match the paragraph's expected full text and "
+                "style; all edits are preflighted before mutation. Dry-run is enabled by "
+                "default and the document is never saved automatically."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "edits": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 500,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "location": {
+                                    "type": "object",
+                                    "properties": {
+                                        "section": {
+                                            "type": "string",
+                                            "enum": ["body"],
+                                        },
+                                        "paragraph": {
+                                            "type": "integer",
+                                            "minimum": 1,
+                                        },
+                                    },
+                                    "required": ["section", "paragraph"],
+                                },
+                                "expected_text": {
+                                    "type": "string",
+                                    "description": "Exact current full paragraph text",
+                                },
+                                "expected_style": {
+                                    "type": "string",
+                                    "description": "Exact current paragraph style",
+                                },
+                                "search_text": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": (
+                                        "Exact substring, which must occur once in "
+                                        "expected_text"
+                                    ),
+                                },
+                                "replacement_text": {
+                                    "type": "string",
+                                    "description": "Text to insert in place of search_text",
+                                },
+                            },
+                            "required": [
+                                "location",
+                                "expected_text",
+                                "expected_style",
+                                "search_text",
+                                "replacement_text",
+                            ],
+                        },
+                    },
+                    "document_identifier": {
+                        "type": "string",
+                        "description": (
+                            "Exact title or URL of an already-open document; "
+                            "omit to use the active document"
+                        ),
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Preview the batch without changing document text",
+                    },
+                },
+                "required": ["edits"],
+            },
+            "handler": self.replace_document_elements_live,
+        }
+
         self.tools["get_selected_text_live"] = {
             "description": "Get the text selected in the active Writer document",
             "parameters": {
@@ -330,6 +441,31 @@ class LibreOfficeMCPServer:
             query=query,
             document_identifier=document_identifier,
             max_results=max_results,
+        )
+    def search_document_headings_live(
+        self,
+        query: Optional[str] = None,
+        document_identifier: Optional[str] = None,
+        max_results: int = 100,
+    ) -> Dict[str, Any]:
+        """List heading paragraphs in an already-open Writer document."""
+        return self.uno_bridge.search_document_headings(
+            query=query,
+            document_identifier=document_identifier,
+            max_results=max_results,
+        )
+
+    def replace_document_elements_live(
+        self,
+        edits: List[Dict[str, Any]],
+        document_identifier: Optional[str] = None,
+        dry_run: bool = True,
+    ) -> Dict[str, Any]:
+        """Replace guarded Writer text ranges without saving the document."""
+        return self.uno_bridge.replace_document_elements(
+            edits=edits,
+            document_identifier=document_identifier,
+            dry_run=dry_run,
         )
 
     def get_selected_text_live(self) -> Dict[str, Any]:

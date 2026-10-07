@@ -388,6 +388,420 @@ class UNOBridge:
         except Exception as e:
             logger.error(f"Failed to get text content: {e}")
             return {"success": False, "error": str(e)}
+
+    def search_document_headings(
+        self,
+        query: Optional[str] = None,
+        document_identifier: Optional[str] = None,
+        max_results: int = 100,
+    ) -> Dict[str, Any]:
+        """List headings in an already-open Writer document, optionally filtered by text."""
+        if query is not None and (not isinstance(query, str) or not query):
+            return {
+                "success": False,
+                "error": "query must be a non-empty string when provided",
+            }
+        if (
+            isinstance(max_results, bool)
+            or not isinstance(max_results, int)
+            or max_results < 1
+            or max_results > self.MAX_SEARCH_RESULTS
+        ):
+            return {
+                "success": False,
+                "error": f"max_results must be an integer from 1 to {self.MAX_SEARCH_RESULTS}",
+            }
+
+        doc, error = self._resolve_search_document(document_identifier)
+        if error:
+            return {"success": False, "error": error}
+
+        try:
+            doc_type = self._get_document_type(doc)
+            if doc_type != "writer":
+                return {
+                    "success": False,
+                    "error": "Heading search is only supported for Writer documents",
+                }
+
+            folded_query = query.casefold() if query is not None else None
+            matches = []
+            truncated = False
+            for paragraph_index, element, text_value in self._writer_body_paragraphs(doc):
+                style = self._property(element, "ParaStyleName")
+                outline_level = self._property(element, "OutlineLevel")
+                if not self._is_writer_heading(style, outline_level):
+                    continue
+                if folded_query is not None and folded_query not in text_value.casefold():
+                    continue
+                if len(matches) >= max_results:
+                    truncated = True
+                    break
+
+                formatting = {}
+                if style is not None:
+                    formatting["style"] = self._json_value(style)
+                if outline_level is not None:
+                    formatting["outline_level"] = self._json_value(outline_level)
+                alignment = self._property(element, "ParaAdjust")
+                if alignment is not None:
+                    formatting["alignment"] = self._json_value(alignment)
+                character_defaults = self._formatting_metadata(element)
+                if character_defaults:
+                    formatting["character_defaults"] = character_defaults
+
+                match = {
+                    "element_type": "paragraph",
+                    "text": text_value,
+                    "location": {
+                        "section": "body",
+                        "paragraph": paragraph_index,
+                    },
+                    "formatting": formatting,
+                }
+                runs = self._text_runs(element)
+                if runs:
+                    match["runs"] = runs
+                matches.append(match)
+
+            return {
+                "success": True,
+                "document": {
+                    "title": self._document_title(doc),
+                    "url": self._document_url(doc),
+                    "type": doc_type,
+                },
+                "query": query,
+                "matches": matches,
+                "count": len(matches),
+                "truncated": truncated,
+            }
+        except Exception as e:
+            logger.error(f"Failed to search document headings: {e}")
+            return {"success": False, "error": str(e)}
+
+    def replace_document_elements(
+        self,
+        edits: List[Dict[str, Any]],
+        document_identifier: Optional[str] = None,
+        dry_run: bool = True,
+    ) -> Dict[str, Any]:
+        """Replace exact text ranges in body paragraphs after validating the full batch."""
+        if not isinstance(edits, list) or not edits:
+            return {"success": False, "error": "edits must be a non-empty array"}
+        if len(edits) > self.MAX_SEARCH_RESULTS:
+            return {
+                "success": False,
+                "error": f"edits cannot contain more than {self.MAX_SEARCH_RESULTS} items",
+            }
+        if not isinstance(dry_run, bool):
+            return {"success": False, "error": "dry_run must be a boolean"}
+
+        validation_errors = []
+        normalized_edits = []
+        seen_locations = set()
+        required_fields = (
+            "location",
+            "expected_text",
+            "expected_style",
+            "search_text",
+            "replacement_text",
+        )
+        for edit_index, edit in enumerate(edits):
+            if not isinstance(edit, dict):
+                validation_errors.append(
+                    {"edit_index": edit_index, "error": "each edit must be an object"}
+                )
+                continue
+            missing = [field for field in required_fields if field not in edit]
+            if missing:
+                validation_errors.append(
+                    {
+                        "edit_index": edit_index,
+                        "error": f"missing required fields: {', '.join(missing)}",
+                    }
+                )
+                continue
+
+            location = edit["location"]
+            if (
+                not isinstance(location, dict)
+                or location.get("section") != "body"
+                or isinstance(location.get("paragraph"), bool)
+                or not isinstance(location.get("paragraph"), int)
+                or location["paragraph"] < 1
+            ):
+                validation_errors.append(
+                    {
+                        "edit_index": edit_index,
+                        "error": "location must identify a body paragraph with a positive paragraph number",
+                    }
+                )
+                continue
+
+            string_fields = (
+                "expected_text",
+                "expected_style",
+                "search_text",
+                "replacement_text",
+            )
+            invalid_fields = [
+                field for field in string_fields if not isinstance(edit[field], str)
+            ]
+            if invalid_fields:
+                validation_errors.append(
+                    {
+                        "edit_index": edit_index,
+                        "error": f"these fields must be strings: {', '.join(invalid_fields)}",
+                    }
+                )
+                continue
+            if not edit["expected_style"]:
+                validation_errors.append(
+                    {"edit_index": edit_index, "error": "expected_style must not be empty"}
+                )
+                continue
+            if not edit["search_text"]:
+                validation_errors.append(
+                    {"edit_index": edit_index, "error": "search_text must not be empty"}
+                )
+                continue
+            target_number = location["paragraph"]
+            if target_number in seen_locations:
+                validation_errors.append(
+                    {
+                        "edit_index": edit_index,
+                        "error": "only one edit per paragraph is allowed in a batch",
+                    }
+                )
+                continue
+            seen_locations.add(target_number)
+
+            expected_text = edit["expected_text"]
+            search_text = edit["search_text"]
+            if expected_text.count(search_text) != 1:
+                validation_errors.append(
+                    {
+                        "edit_index": edit_index,
+                        "error": "search_text must occur exactly once in expected_text",
+                    }
+                )
+                continue
+            normalized_edits.append(
+                {
+                    "edit_index": edit_index,
+                    "paragraph": target_number,
+                    "location": {
+                        "section": "body",
+                        "paragraph": target_number,
+                    },
+                    "expected_text": expected_text,
+                    "expected_style": edit["expected_style"],
+                    "search_text": search_text,
+                    "replacement_text": edit["replacement_text"],
+                    "offset": expected_text.index(search_text),
+                }
+            )
+
+        if validation_errors:
+            return {
+                "success": False,
+                "error": "Batch validation failed; no changes made",
+                "errors": validation_errors,
+            }
+
+        doc, error = self._resolve_search_document(document_identifier)
+        if error:
+            return {"success": False, "error": error}
+        try:
+            doc_type = self._get_document_type(doc)
+            if doc_type != "writer":
+                return {
+                    "success": False,
+                    "error": "Batch text replacement is only supported for Writer documents",
+                }
+
+            paragraphs = {
+                paragraph_index: (element, text_value)
+                for paragraph_index, element, text_value in self._writer_body_paragraphs(doc)
+            }
+            prepared_edits = []
+            preflight_errors = []
+            for edit in normalized_edits:
+                edit_index = edit["edit_index"]
+                paragraph_entry = paragraphs.get(edit["paragraph"])
+                if paragraph_entry is None:
+                    preflight_errors.append(
+                        {
+                            "edit_index": edit_index,
+                            "error": "target paragraph no longer exists",
+                        }
+                    )
+                    continue
+
+                element, current_text = paragraph_entry
+                if current_text != edit["expected_text"]:
+                    preflight_errors.append(
+                        {
+                            "edit_index": edit_index,
+                            "error": "paragraph text no longer matches expected_text",
+                        }
+                    )
+                    continue
+                current_style = self._property(element, "ParaStyleName")
+                if current_style != edit["expected_style"]:
+                    preflight_errors.append(
+                        {
+                            "edit_index": edit_index,
+                            "error": "paragraph style no longer matches expected_style",
+                        }
+                    )
+                    continue
+
+                try:
+                    cursor = self._select_writer_substring(
+                        element, edit["offset"], edit["search_text"]
+                    )
+                except Exception as cursor_error:
+                    preflight_errors.append(
+                        {
+                            "edit_index": edit_index,
+                            "error": f"could not verify target text range: {cursor_error}",
+                        }
+                    )
+                    continue
+                prepared_edits.append(
+                    {
+                        **edit,
+                        "cursor": cursor,
+                        "before": current_text,
+                        "after": current_text.replace(
+                            edit["search_text"], edit["replacement_text"], 1
+                        ),
+                    }
+                )
+
+            if preflight_errors:
+                return {
+                    "success": False,
+                    "error": "Batch preflight failed; no changes made",
+                    "errors": preflight_errors,
+                }
+
+            if not dry_run:
+                for edit in sorted(
+                    prepared_edits, key=lambda item: item["paragraph"], reverse=True
+                ):
+                    cursor = edit["cursor"]
+                    if cursor.getString() != edit["search_text"]:
+                        return {
+                            "success": False,
+                            "error": (
+                                "A target range changed after preflight; earlier edits "
+                                "may already have been applied"
+                            ),
+                            "partial": any(
+                                item.get("applied", False) for item in prepared_edits
+                            ),
+                        }
+                    cursor.setString(edit["replacement_text"])
+                    edit["applied"] = True
+
+            changes = [
+                {
+                    "edit_index": edit["edit_index"],
+                    "location": edit["location"],
+                    "style": edit["expected_style"],
+                    "before": edit["before"],
+                    "after": edit["after"],
+                    "status": "preview" if dry_run else "applied",
+                }
+                for edit in sorted(prepared_edits, key=lambda item: item["edit_index"])
+            ]
+            return {
+                "success": True,
+                "dry_run": dry_run,
+                "document": {
+                    "title": self._document_title(doc),
+                    "url": self._document_url(doc),
+                    "type": doc_type,
+                },
+                "count": len(changes),
+                "changes": changes,
+                "saved": False,
+            }
+        except Exception as e:
+            logger.error(f"Failed to replace document elements: {e}")
+            return {"success": False, "error": str(e)}
+
+    def _writer_body_paragraphs(self, doc: Any):
+        """Yield searchable top-level Writer paragraphs with search-compatible locations."""
+        paragraph_index = 0
+        for element in self._enumerate_items(doc.getText()):
+            if callable(getattr(element, "getCellNames", None)) and callable(
+                getattr(element, "getCellByName", None)
+            ):
+                continue
+            text_value = self._range_string(element)
+            if text_value is None:
+                continue
+            paragraph_index += 1
+            yield paragraph_index, element, text_value
+
+    @staticmethod
+    def _is_writer_heading(style: Any, outline_level: Any) -> bool:
+        try:
+            if int(outline_level) > 0:
+                return True
+        except (TypeError, ValueError):
+            pass
+
+        style_name = str(style or "").strip().casefold()
+        for prefix in ("heading", "titre", "titulo", "título", "überschrift", "rubrik"):
+            if style_name.startswith(prefix):
+                suffix = style_name[len(prefix):].strip()
+                if suffix.isdigit():
+                    return True
+        return style_name == "title"
+
+    @staticmethod
+    def _uno_character_count(value: str) -> int:
+        """Return the Unicode character count used by UNO XTextCursor.goRight."""
+        return len(value)
+
+    def _select_writer_substring(
+        self, paragraph: Any, offset: int, search_text: str
+    ) -> Any:
+        """Create and verify a UNO cursor selecting exactly one substring."""
+        get_text = getattr(paragraph, "getText", None)
+        get_start = getattr(paragraph, "getStart", None)
+        if not callable(get_text) or not callable(get_start):
+            raise ValueError("paragraph does not expose a UNO text range")
+        text = get_text()
+        create_cursor = getattr(text, "createTextCursorByRange", None)
+        if not callable(create_cursor):
+            raise ValueError("paragraph text cannot create a cursor by range")
+
+        cursor = create_cursor(get_start())
+        go_right = getattr(cursor, "goRight", None)
+        get_string = getattr(cursor, "getString", None)
+        set_string = getattr(cursor, "setString", None)
+        if not callable(go_right) or not callable(get_string) or not callable(set_string):
+            raise ValueError("UNO text cursor cannot select and replace text")
+
+        uno_offset = self._uno_character_count(
+            self._range_string(paragraph)[:offset]
+        )
+        uno_length = self._uno_character_count(search_text)
+        if uno_offset > 32767 or uno_length > 32767:
+            raise ValueError("target range exceeds UNO cursor movement limits")
+        if uno_offset and not go_right(uno_offset, False):
+            raise ValueError("could not move the cursor to the target offset")
+        if not go_right(uno_length, True):
+            raise ValueError("could not select the target text")
+        if get_string() != search_text:
+            raise ValueError("selected text does not match search_text")
+        return cursor
     
     def search_document_elements(
         self,
