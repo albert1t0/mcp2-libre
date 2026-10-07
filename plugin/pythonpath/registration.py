@@ -4,7 +4,6 @@ LibreOffice MCP Extension - Registration Module
 This module handles the registration and lifecycle of the LibreOffice MCP extension.
 """
 
-import uno
 import unohelper
 import logging
 import traceback
@@ -57,7 +56,7 @@ class MCPExtension(unohelper.Base, XJobExecutor, XServiceInfo):
             elif args == "restart_mcp_server":
                 self._restart_mcp_server()
             elif args == "get_status":
-                return self._get_status()
+                self._show_status_dialog(self._get_status())
             else:
                 logger.warning(f"Unknown trigger args: {args}")
                 
@@ -154,16 +153,59 @@ class MCPExtension(unohelper.Base, XJobExecutor, XServiceInfo):
         
         logger.info(f"Extension status: {status}")
         return status
+
+    @staticmethod
+    def _format_status_message(status):
+        """Format the extension and HTTP listener state for the status dialog."""
+        host = status.get("host", "localhost")
+        port = status.get("port", 8765)
+        endpoint = status.get("url", f"http://{host}:{port}")
+        thread_alive = status.get("thread_alive")
+        if thread_alive is None:
+            thread_state = "Not started"
+        else:
+            thread_state = "Running" if thread_alive else "Stopped"
+
+        return "\n".join((
+            f"Server: {'Running' if status.get('running') else 'Stopped'}",
+            f"Extension: {'Started' if status.get('started') else 'Stopped'}",
+            f"HTTP listener thread: {thread_state}",
+            f"Endpoint: {endpoint}",
+            f"Health check: {endpoint}/health",
+        ))
+
+    def _show_status_dialog(self, status):
+        """Display current server state in a native LibreOffice information box."""
+        try:
+            service_manager = self.ctx.ServiceManager
+            desktop = service_manager.createInstanceWithContext(
+                "com.sun.star.frame.Desktop", self.ctx)
+            toolkit = service_manager.createInstanceWithContext(
+                "com.sun.star.awt.Toolkit", self.ctx)
+
+            frame = desktop.getCurrentFrame()
+            parent = frame.getContainerWindow() if frame else None
+            if parent is None:
+                parent = toolkit.getDesktopWindow()
+
+            message_box = toolkit.createMessageBox(
+                parent,
+                "infobox",
+                1,
+                "LibreOffice MCP Server Status",
+                self._format_status_message(status),
+            )
+            try:
+                message_box.execute()
+            finally:
+                message_box.dispose()
+        except Exception as e:
+            logger.error(f"Failed to display MCP server status: {e}")
+            logger.error(traceback.format_exc())
     
     def _show_notification(self, title: str, message: str):
         """Show a notification to the user"""
         try:
-            # Get the frame and show an info box
-            desktop = self.ctx.ServiceManager.createInstanceWithContext(
-                "com.sun.star.frame.Desktop", self.ctx)
-            
-            # For now, just log the notification
-            # In a full implementation, you would show a proper LibreOffice notification
             logger.info(f"NOTIFICATION - {title}: {message}")
             
         except Exception as e:

@@ -5,6 +5,8 @@ import io
 import os
 import shutil
 import subprocess
+import sys
+import types
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
@@ -17,7 +19,12 @@ import pytest
 PLUGIN_DIR = Path(__file__).resolve().parents[1] / "plugin"
 
 
-def load_module(name):
+def load_module(name, monkeypatch=None):
+    if name == "test_plugin":
+        requests = types.ModuleType("requests")
+        requests.Session = lambda: SimpleNamespace(headers={})
+        requests.exceptions = SimpleNamespace(RequestException=Exception)
+        monkeypatch.setitem(sys.modules, "requests", requests)
     spec = importlib.util.spec_from_file_location(name, PLUGIN_DIR / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -83,7 +90,7 @@ def test_connection_refused_is_not_healthy(launcher, monkeypatch):
 
 @pytest.mark.parametrize("success", [False, True])
 def test_client_exit_code_matches_result(monkeypatch, success):
-    client = load_module("test_plugin")
+    client = load_module("test_plugin", monkeypatch)
     monkeypatch.setattr(client.sys, "argv", ["test_plugin.py"])
     monkeypatch.setattr(
         client.LibreOfficeMCPClient, "run_comprehensive_test", lambda self: success
@@ -92,7 +99,7 @@ def test_client_exit_code_matches_result(monkeypatch, success):
 
 
 def test_create_failure_does_not_edit_existing_document(monkeypatch):
-    module = load_module("test_plugin")
+    module = load_module("test_plugin", monkeypatch)
     client = module.LibreOfficeMCPClient()
     monkeypatch.setattr(client, "test_connection", lambda: True)
     monkeypatch.setattr(client, "get_server_info", lambda: {"name": "test"})
