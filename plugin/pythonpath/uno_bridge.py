@@ -8,9 +8,6 @@ enabling direct manipulation of LibreOffice documents.
 import uno
 import unohelper
 from com.sun.star.beans import PropertyValue
-from com.sun.star.text import XTextDocument
-from com.sun.star.sheet import XSpreadsheetDocument
-from com.sun.star.presentation import XPresentationDocument
 from com.sun.star.document import XDocumentEventListener
 from com.sun.star.awt import XActionListener
 from typing import Any, Optional, Dict, List
@@ -93,11 +90,11 @@ class UNOBridge:
             }
             
             # Add document-specific information
-            if isinstance(doc, XTextDocument):
+            if doc.supportsService("com.sun.star.text.TextDocument"):
                 text = doc.getText()
                 info["word_count"] = len(text.getString().split())
                 info["character_count"] = len(text.getString())
-            elif isinstance(doc, XSpreadsheetDocument):
+            elif doc.supportsService("com.sun.star.sheet.SpreadsheetDocument"):
                 sheets = doc.getSheets()
                 info["sheet_count"] = sheets.getCount()
                 info["sheet_names"] = [sheets.getByIndex(i).getName() 
@@ -129,7 +126,7 @@ class UNOBridge:
                 return {"success": False, "error": "No active document"}
             
             # Handle Writer documents
-            if isinstance(doc, XTextDocument):
+            if doc.supportsService("com.sun.star.text.TextDocument"):
                 text_obj = doc.getText()
                 
                 if position is None:
@@ -168,7 +165,7 @@ class UNOBridge:
             if doc is None:
                 doc = self.get_active_document()
             
-            if not doc or not isinstance(doc, XTextDocument):
+            if not doc or not doc.supportsService("com.sun.star.text.TextDocument"):
                 return {"success": False, "error": "No Writer document available"}
             
             # Get current selection
@@ -299,7 +296,7 @@ class UNOBridge:
             if not doc:
                 return {"success": False, "error": "No document available"}
             
-            if isinstance(doc, XTextDocument):
+            if doc.supportsService("com.sun.star.text.TextDocument"):
                 text = doc.getText().getString()
                 return {"success": True, "content": text, "length": len(text)}
             else:
@@ -311,11 +308,11 @@ class UNOBridge:
     
     def _get_document_type(self, doc: Any) -> str:
         """Determine document type"""
-        if isinstance(doc, XTextDocument):
+        if doc.supportsService("com.sun.star.text.TextDocument"):
             return "writer"
-        elif isinstance(doc, XSpreadsheetDocument):
+        elif doc.supportsService("com.sun.star.sheet.SpreadsheetDocument"):
             return "calc"
-        elif isinstance(doc, XPresentationDocument):
+        elif doc.supportsService("com.sun.star.presentation.PresentationDocument"):
             return "impress"
         else:
             return "unknown"

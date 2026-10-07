@@ -12,7 +12,6 @@ import threading
 from typing import Dict, Any, Optional
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
-import socketserver
 
 from .mcp_server import get_mcp_server
 
@@ -170,53 +169,61 @@ class AIInterface:
                 return
             
             # Create HTTP server
-            with socketserver.TCPServer(("", self.port), MCPRequestHandler) as server:
-                server.allow_reuse_address = True
-                self.server = server
-                self.running = True
-                
-                logger.info(f"Started MCP HTTP server on {self.host}:{self.port}")
-                
-                # Start server in background thread
-                self.server_thread = threading.Thread(
-                    target=self._run_server,
-                    daemon=True
-                )
-                self.server_thread.start()
-                
-                logger.info("MCP HTTP server started successfully")
+            server = HTTPServer((self.host, self.port), MCPRequestHandler)
+            self.server = server
+            self.running = True
+            logger.info(f"Started MCP HTTP server on {self.host}:{self.port}")
+            # Start server in background thread. The server is intentionally
+            # not managed by a context manager: it must remain alive after
+            # start() returns so callers can use the HTTP API.
+            self.server_thread = threading.Thread(
+                target=self._run_server,
+                args=(server,),
+                daemon=True
+            )
+            self.server_thread.start()
+            logger.info("MCP HTTP server started successfully")
                 
         except Exception as e:
             logger.error(f"Failed to start HTTP server: {e}")
             self.running = False
+            if self.server:
+                self.server.server_close()
+            self.server = None
             raise
     
     def stop(self):
         """Stop the HTTP server"""
         try:
-            if not self.running:
+            if self.server is None:
                 logger.warning("Server is not running")
                 return
             
+            server = self.server
+            server_thread = self.server_thread
             self.running = False
-            if self.server:
-                self.server.shutdown()
-                self.server.server_close()
+            self.server = None
+            if server:
+                server.shutdown()
+                server.server_close()
+                if server_thread and server_thread is not threading.current_thread():
+                    server_thread.join(timeout=2)
                 logger.info("MCP HTTP server stopped")
                 
         except Exception as e:
             logger.error(f"Error stopping HTTP server: {e}")
     
-    def _run_server(self):
+    def _run_server(self, server):
         """Run the HTTP server"""
         try:
             logger.info(f"HTTP server listening on {self.host}:{self.port}")
-            self.server.serve_forever()
+            server.serve_forever()
         except Exception as e:
             if self.running:  # Only log if we're supposed to be running
                 logger.error(f"HTTP server error: {e}")
         finally:
-            self.running = False
+            if self.server is server:
+                self.running = False
     
     def is_running(self) -> bool:
         """Check if the server is running"""

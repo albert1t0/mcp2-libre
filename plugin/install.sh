@@ -5,8 +5,9 @@
 
 set -e
 
-PLUGIN_DIR="/home/patrick/work/mcp/mcp-libre/plugin"
-BUILD_DIR="/home/patrick/work/mcp/mcp-libre/build"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_DIR="$SCRIPT_DIR"
+BUILD_DIR="$(cd -- "$PLUGIN_DIR/.." && pwd)/build"
 
 echo "🎯 LibreOffice MCP Extension - Installation & Usage Guide"
 echo "========================================================"
@@ -133,14 +134,16 @@ uninstall_extension() {
 test_extension() {
     echo "🧪 Testing extension functionality..."
     
-    # Check if LibreOffice is running
-    if ! pgrep -f "soffice" >/dev/null 2>&1; then
-        echo "❌ LibreOffice is not running"
-        echo "   Please start LibreOffice and try again"
-        echo "   The extension needs LibreOffice to be running"
+    # The HTTP server is provided by the installed LibreOffice extension.
+    # A running LibreOffice process alone is not enough to expose port 8765.
+    if ! unopkg list 2>/dev/null | grep -q "org.mcp.libreoffice.extension"; then
+        echo "❌ LibreOffice MCP extension is not installed"
+        echo "   Run '$0 install', restart LibreOffice, and try again"
         exit 1
     fi
     
+    # Start (or reuse) the installed extension and verify HTTP readiness.
+    python3 "$PLUGIN_DIR/start_server.py"
     # Check if test client is available
     if [ ! -f "$PLUGIN_DIR/test_plugin.py" ]; then
         echo "❌ Test client not found"

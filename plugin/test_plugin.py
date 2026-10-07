@@ -41,7 +41,7 @@ class LibreOfficeMCPClient:
     def get_server_info(self) -> Optional[Dict[str, Any]]:
         """Get server information"""
         try:
-            response = self.session.get(f"{self.base_url}/")
+            response = self.session.get(f"{self.base_url}/", timeout=5)
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
@@ -51,7 +51,7 @@ class LibreOfficeMCPClient:
     def list_tools(self) -> Optional[Dict[str, Any]]:
         """List available tools"""
         try:
-            response = self.session.get(f"{self.base_url}/tools")
+            response = self.session.get(f"{self.base_url}/tools", timeout=5)
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
@@ -67,7 +67,8 @@ class LibreOfficeMCPClient:
             # Method 1: Direct tool endpoint
             response = self.session.post(
                 f"{self.base_url}/tools/{tool_name}",
-                json=parameters
+                json=parameters,
+                timeout=10
             )
             response.raise_for_status()
             return response.json()
@@ -77,7 +78,8 @@ class LibreOfficeMCPClient:
                 # Method 2: Generic execute endpoint
                 response = self.session.post(
                     f"{self.base_url}/execute",
-                    json={"tool": tool_name, "parameters": parameters}
+                    json={"tool": tool_name, "parameters": parameters},
+                    timeout=10
                 )
                 response.raise_for_status()
                 return response.json()
@@ -99,6 +101,7 @@ class LibreOfficeMCPClient:
         # Test 2: Server info
         print("\n2️⃣ Getting server information...")
         server_info = self.get_server_info()
+        success = bool(server_info)
         if server_info:
             print(f"✅ Server: {server_info.get('name', 'Unknown')}")
             print(f"   Version: {server_info.get('version', 'Unknown')}")
@@ -131,6 +134,7 @@ class LibreOfficeMCPClient:
                 print(f"⚠️  No active document (expected): {result.get('error', 'Unknown error')}")
         else:
             print("❌ Failed to get document info")
+            success = False
         
         # Test 5: Create document
         print("\n5️⃣ Testing document creation...")
@@ -140,6 +144,7 @@ class LibreOfficeMCPClient:
             time.sleep(1)  # Give LibreOffice time to open the document
         else:
             print(f"❌ Failed to create document: {result.get('error') if result else 'No response'}")
+            return False
         
         # Test 6: Insert text (if document was created)
         print("\n6️⃣ Testing text insertion...")
@@ -149,6 +154,7 @@ class LibreOfficeMCPClient:
             print(f"✅ Inserted text: '{test_text}'")
         else:
             print(f"❌ Failed to insert text: {result.get('error') if result else 'No response'}")
+            success = False
         
         # Test 7: Get document info again (should show the new document)
         print("\n7️⃣ Testing document info after creation...")
@@ -161,6 +167,7 @@ class LibreOfficeMCPClient:
             print(f"   Character count: {doc_info.get('character_count', 0)}")
         else:
             print(f"❌ Failed to get updated document info: {result.get('error') if result else 'No response'}")
+            success = False
         
         # Test 8: List open documents
         print("\n8️⃣ Testing list_open_documents...")
@@ -172,6 +179,7 @@ class LibreOfficeMCPClient:
                 print(f"   {i+1}. {doc.get('title', 'Untitled')} ({doc.get('type', 'unknown')})")
         else:
             print(f"❌ Failed to list open documents: {result.get('error') if result else 'No response'}")
+            success = False
         
         # Test 9: Get text content
         print("\n9️⃣ Testing text content extraction...")
@@ -182,6 +190,7 @@ class LibreOfficeMCPClient:
             print(f"   Preview: '{content[:50]}{'...' if len(content) > 50 else ''}'")
         else:
             print(f"❌ Failed to get text content: {result.get('error') if result else 'No response'}")
+            success = False
         
         print("\n🎉 Test suite completed!")
         print("\n💡 Tips:")
@@ -189,7 +198,7 @@ class LibreOfficeMCPClient:
         print("   - The extension auto-starts the MCP server on localhost:8765")
         print("   - Check Tools > MCP Server in LibreOffice for manual control")
         
-        return True
+        return success
     
     def interactive_mode(self):
         """Run in interactive mode"""
@@ -295,8 +304,8 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == "interactive":
         client.interactive_mode()
     else:
-        client.run_comprehensive_test()
+        return 0 if client.run_comprehensive_test() else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

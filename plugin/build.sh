@@ -5,8 +5,9 @@
 
 set -e
 
-PLUGIN_DIR="/home/patrick/work/mcp/mcp-libre/plugin"
-BUILD_DIR="/home/patrick/work/mcp/mcp-libre/build"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_DIR="$SCRIPT_DIR"
+BUILD_DIR="$(cd -- "$PLUGIN_DIR/.." && pwd)/build"
 EXTENSION_NAME="libreoffice-mcp-extension"
 VERSION="1.0.0"
 
@@ -24,12 +25,27 @@ rm -f "$BUILD_DIR/${EXTENSION_NAME}.oxt"
 echo "📦 Packaging extension files..."
 
 # Create the .oxt file (which is just a ZIP archive)
-zip -r "$BUILD_DIR/${EXTENSION_NAME}-${VERSION}.oxt" \
-    META-INF/ \
-    pythonpath/ \
-    *.xml \
-    *.txt \
-    -x "*.pyc" "*/__pycache__/*"
+python3 - "$BUILD_DIR/${EXTENSION_NAME}-${VERSION}.oxt" "$PLUGIN_DIR" <<'PY'
+from pathlib import Path
+import sys
+import zipfile
+
+output_path = Path(sys.argv[1])
+plugin_dir = Path(sys.argv[2])
+
+with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    for path in plugin_dir.rglob("*"):
+        if not path.is_file() or path.suffix == ".pyc" or "__pycache__" in path.parts:
+            continue
+
+        relative_path = path.relative_to(plugin_dir)
+        if (
+            relative_path.parts[0] in {"META-INF", "pythonpath"}
+            or path.suffix in {".xml", ".txt", ".xcu"}
+        ):
+            archive.write(path, relative_path.as_posix())
+    archive.write(plugin_dir.parent / "LICENSE", "LICENSE")
+PY
 
 # Create a symlink for easier access
 ln -sf "${EXTENSION_NAME}-${VERSION}.oxt" "$BUILD_DIR/${EXTENSION_NAME}.oxt"

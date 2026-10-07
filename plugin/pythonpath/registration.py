@@ -7,10 +7,16 @@ This module handles the registration and lifecycle of the LibreOffice MCP extens
 import uno
 import unohelper
 import logging
-import threading
 import traceback
+import sys
+from pathlib import Path
 from com.sun.star.task import XJobExecutor
 from com.sun.star.lang import XServiceInfo
+# LibreOffice's Python loader executes this file as "uno_component", not as
+# part of a package. Restore the package context for the sibling imports.
+if not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    __package__ = "pythonpath"
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -19,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 # Implementation name and service name for the extension
 IMPLEMENTATION_NAME = "org.mcp.libreoffice.MCPExtension"
-SERVICE_NAMES = ("com.sun.star.task.JobExecutor",)
+SERVICE_NAMES = (IMPLEMENTATION_NAME, "com.sun.star.task.JobExecutor")
 
 
 class MCPExtension(unohelper.Base, XJobExecutor, XServiceInfo):
@@ -178,10 +184,7 @@ class ExtensionEventListener:
             self.extension_instance = MCPExtension(ctx)
             
             # Auto-start the MCP server
-            threading.Thread(
-                target=self.extension_instance._start_mcp_server,
-                daemon=True
-            ).start()
+            self.extension_instance._start_mcp_server()
             
             logger.info("Extension loaded successfully")
             
@@ -214,7 +217,8 @@ def createInstance(ctx):
     """Create extension instance"""
     try:
         logger.info("Creating extension instance")
-        extension_listener.on_extension_load(ctx)
+        if extension_listener.extension_instance is None:
+            extension_listener.on_extension_load(ctx)
         return extension_listener.extension_instance
         
     except Exception as e:
