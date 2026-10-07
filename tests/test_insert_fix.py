@@ -39,49 +39,47 @@ def test_insert_text_fix():
         
         # 3. Test inserting a simple character (this was failing before)
         print("\n✏️  Step 3: Inserting a simple period '.' at the end...")
-        try:
-            result = insert_text_at_position(str(test_doc), ".", "end")
-            print(f"✅ Successfully inserted period")
-            print(f"   File updated: {result.filename}")
-        except Exception as e:
-            print(f"❌ Failed to insert period: {e}")
-            return False
+        result = insert_text_at_position(str(test_doc), ".", "end")
+        print("✅ Successfully inserted period")
+        print(f"   File updated: {result.filename}")
         
         # 4. Verify the change
         print("\n🔍 Step 4: Verifying the change...")
         content = read_document_text(str(test_doc))
         print(f"✅ Updated content: '{content.content.strip()}'")
+        assert "Hello World" in content.content
+        assert content.content.rstrip().endswith(".")
         
         # 5. Test inserting at start
         print("\n⬆️  Step 5: Inserting text at start...")
-        try:
-            result = insert_text_at_position(str(test_doc), "Beginning: ", "start")
-            print(f"✅ Successfully inserted at start")
-        except Exception as e:
-            print(f"❌ Failed to insert at start: {e}")
-            return False
+        insert_text_at_position(str(test_doc), "Beginning: ", "start")
+        content = read_document_text(str(test_doc))
+        normalized_content = content.content.lstrip("\ufeff\n\r ")
+        assert normalized_content.startswith("Beginning:")
+        print("✅ Successfully inserted at start")
         
         # 6. Test replacing content
         print("\n🔄 Step 6: Replacing content...")
-        try:
-            result = insert_text_at_position(str(test_doc), "This is completely new content!", "replace")
-            print(f"✅ Successfully replaced content")
-        except Exception as e:
-            print(f"❌ Failed to replace content: {e}")
-            return False
+        insert_text_at_position(
+            str(test_doc), "This is completely new content!", "replace"
+        )
+        print("✅ Successfully replaced content")
         
         # 7. Final verification
         print("\n📋 Step 7: Final verification...")
         final_content = read_document_text(str(test_doc))
         print(f"✅ Final content: '{final_content.content.strip()}'")
         print(f"   Final word count: {final_content.word_count}")
+        assert (
+            final_content.content.strip("\ufeff\n\r ")
+            == "This is completely new content!"
+        )
         
         print("\n🎉 All tests passed! The insert_text_at_position fix is working.")
-        return True
         
     except Exception as e:
         print(f"\n❌ Test failed with error: {e}")
-        return False
+        raise
         
     finally:
         # Clean up
@@ -142,7 +140,11 @@ if __name__ == "__main__":
     print("=" * 60)
     
     # Run main test
-    success = test_insert_text_fix()
+    try:
+        test_insert_text_fix()
+        success = True
+    except Exception:
+        success = False
     
     if success:
         # Run edge case tests
