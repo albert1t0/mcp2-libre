@@ -340,8 +340,9 @@ class LibreOfficeMCPServer:
         self.tools["apply_writer_paragraph_formatting_live"] = {
             "description": (
                 "Apply one allowlisted formatting property directly to guarded body "
-                "paragraphs. Uses exact expected text and style, preserves portions "
-                "with direct formatting, previews by default, and never saves."
+                "paragraphs. Uses exact expected text and style, preserves direct "
+                "formatting by default, optionally overrides direct values for only "
+                "the named property, previews by default, and never saves."
             ),
             "parameters": {
                 "type": "object",
@@ -405,6 +406,14 @@ class LibreOfficeMCPServer:
                     "dry_run": {
                         "type": "boolean",
                         "default": True,
+                    },
+                    "override_direct": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "When true, also replace direct values of property_name; "
+                            "other formatting properties are left unchanged"
+                        ),
                     },
                 },
                 "required": ["targets", "property_name", "value"],
@@ -694,14 +703,16 @@ class LibreOfficeMCPServer:
         value: Any,
         document_identifier: Optional[str] = None,
         dry_run: bool = True,
+        override_direct: bool = False,
     ) -> Dict[str, Any]:
-        """Preview or apply one formatting property to guarded Writer paragraphs."""
+        """Preview or apply one property to guarded paragraphs."""
         return self.uno_bridge.apply_writer_paragraph_formatting(
             targets=targets,
             property_name=property_name,
             value=value,
             document_identifier=document_identifier,
             dry_run=dry_run,
+            override_direct=override_direct,
         )
 
     def replace_document_elements_live(

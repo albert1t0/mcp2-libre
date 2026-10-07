@@ -742,6 +742,96 @@ def test_direct_paragraph_format_preserves_direct_runs_and_updates_inherited_run
     assert document.isModified() is True
 
 
+def test_direct_paragraph_format_can_override_only_the_requested_property(monkeypatch):
+    run = FakeRun(
+        "Directly formatted",
+        CharFontName="Avenir",
+        CharWeight=150.0,
+        CharPosture=2,
+    )
+    paragraph = FakeParagraph(
+        "Directly formatted",
+        runs=[run],
+        ParaStyleName="normal1",
+    )
+    document = FakeDocument("writer", text=FakeContainer([paragraph]))
+    bridge = make_bridge(monkeypatch, [document], document)
+    targets = [
+        {
+            "location": {"section": "body", "paragraph": 1},
+            "expected_text": "Directly formatted",
+            "expected_style": "normal1",
+        }
+    ]
+
+    result = bridge.apply_writer_paragraph_formatting(
+        targets=targets,
+        property_name="CharFontName",
+        value="Calibri",
+        dry_run=False,
+        override_direct=True,
+    )
+
+    assert result["success"] is True
+    assert result["override_direct"] is True
+    assert result["updated_portions"] == 1
+    assert result["changes"][0]["preserved_direct_portions"] == 0
+    assert run.CharFontName == "Calibri"
+    assert run.CharWeight == 150.0
+    assert run.CharPosture == 2
+    assert document.isModified() is True
+
+
+def test_direct_paragraph_format_rollback_restores_values_and_states(monkeypatch):
+    class RejectNextFontWriteRun(FakeRun):
+        def __setattr__(self, name, value):
+            if name == "CharFontName" and getattr(self, "reject_font_write", False):
+                object.__setattr__(self, "reject_font_write", False)
+                return
+            super().__setattr__(name, value)
+
+    direct_run = FakeRun("Direct", CharFontName="Avenir")
+    inherited_run = FakeRun(
+        " inherited",
+        CharFontName="Liberation Serif",
+        _inherited_properties={"CharFontName": "Liberation Serif"},
+    )
+    rejecting_run = RejectNextFontWriteRun(" rejected", CharFontName="Comic Sans")
+    rejecting_run.reject_font_write = True
+    paragraph = FakeParagraph(
+        "Direct inherited rejected",
+        runs=[direct_run, inherited_run, rejecting_run],
+        ParaStyleName="normal1",
+    )
+    document = FakeDocument("writer", text=FakeContainer([paragraph]))
+    bridge = make_bridge(monkeypatch, [document], document)
+    targets = [
+        {
+            "location": {"section": "body", "paragraph": 1},
+            "expected_text": "Direct inherited rejected",
+            "expected_style": "normal1",
+        }
+    ]
+
+    result = bridge.apply_writer_paragraph_formatting(
+        targets=targets,
+        property_name="CharFontName",
+        value="Calibri",
+        dry_run=False,
+        override_direct=True,
+    )
+
+    assert result["success"] is False
+    assert "rolled back" in result["error"]
+    assert result["rollback_errors"] == []
+    assert direct_run.CharFontName == "Avenir"
+    assert inherited_run.CharFontName == "Liberation Serif"
+    assert inherited_run.getPropertyState("CharFontName") == "DEFAULT_VALUE"
+    assert rejecting_run.CharFontName == "Comic Sans"
+    assert rejecting_run.getPropertyState("CharFontName") == "DIRECT_VALUE"
+    assert document.isModified() is False
+
+
 def test_paragraph_style_tools_validate_writer_type_and_limits(monkeypatch):
     writer = FakeDocument("writer")
     calc = FakeDocument("calc")
@@ -1010,6 +1100,7 @@ def test_plugin_rest_registers_and_executes_live_search(monkeypatch):
             value,
             document_identifier=None,
             dry_run=True,
+            override_direct=False,
         ):
             return {
                 "success": True,
@@ -1018,6 +1109,7 @@ def test_plugin_rest_registers_and_executes_live_search(monkeypatch):
                 "value": value,
                 "document_identifier": document_identifier,
                 "dry_run": dry_run,
+                "override_direct": override_direct,
                 "saved": False,
             }
 
@@ -1101,6 +1193,7 @@ def test_plugin_rest_registers_and_executes_live_search(monkeypatch):
             "value",
         ]
         assert apply_format_tool["parameters"]["properties"]["dry_run"]["default"] is True
+        assert apply_format_tool["parameters"]["properties"]["override_direct"]["default"] is False
 
         request = Request(
             f"{base_url}/tools/search_document_elements_live",
@@ -1177,6 +1270,7 @@ def test_plugin_rest_registers_and_executes_live_search(monkeypatch):
                     "value": "Calibri",
                     "document_identifier": "file:///target",
                     "dry_run": False,
+                    "override_direct": True,
                 }
             ).encode(),
             headers={"Content-Type": "application/json"},
@@ -1243,6 +1337,7 @@ def test_plugin_rest_registers_and_executes_live_search(monkeypatch):
             "value": "Calibri",
             "document_identifier": "file:///target",
             "dry_run": False,
+            "override_direct": True,
             "saved": False,
         }
         assert replacement_result == {

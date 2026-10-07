@@ -779,8 +779,9 @@ class UNOBridge:
         value: Any,
         document_identifier: Optional[str] = None,
         dry_run: bool = True,
+        override_direct: bool = False,
     ) -> Dict[str, Any]:
-        """Apply one property directly to guarded paragraphs without overriding direct runs."""
+        """Apply one property to guarded paragraphs, optionally overriding direct values."""
         if not isinstance(targets, list) or not targets:
             return {"success": False, "error": "targets must be a non-empty array"}
         if len(targets) > self.MAX_SEARCH_RESULTS:
@@ -795,6 +796,8 @@ class UNOBridge:
             return {"success": False, "error": validation_error}
         if not isinstance(dry_run, bool):
             return {"success": False, "error": "dry_run must be a boolean"}
+        if not isinstance(override_direct, bool):
+            return {"success": False, "error": "override_direct must be a boolean"}
 
         doc, error = self._resolve_search_document(document_identifier)
         if error:
@@ -898,7 +901,22 @@ class UNOBridge:
                     for portion in portions:
                         state = self._property_state(portion, property_name)
                         if state == "DIRECT_VALUE":
-                            preserved_direct += 1
+                            before = self._property(portion, property_name)
+                            if self._json_value(before) == self._json_value(
+                                normalized_value
+                            ):
+                                already_matching += 1
+                            elif override_direct:
+                                operations.append(
+                                    {
+                                        "object": portion,
+                                        "before": self._json_value(before),
+                                        "before_state": state,
+                                        "original_value": before,
+                                    }
+                                )
+                            else:
+                                preserved_direct += 1
                         elif state == "DEFAULT_VALUE":
                             before = self._property(portion, property_name)
                             if self._json_value(before) == self._json_value(
@@ -922,6 +940,8 @@ class UNOBridge:
                                     {
                                         "object": portion,
                                         "before": self._json_value(before),
+                                        "before_state": state,
+                                        "original_value": before,
                                     }
                                 )
                         else:
@@ -937,7 +957,22 @@ class UNOBridge:
                 else:
                     state = self._property_state(element, property_name)
                     if state == "DIRECT_VALUE":
-                        preserved_direct = 1
+                        before = self._property(element, property_name)
+                        if self._json_value(before) == self._json_value(
+                            normalized_value
+                        ):
+                            already_matching = 1
+                        elif override_direct:
+                            operations.append(
+                                {
+                                    "object": element,
+                                    "before": self._json_value(before),
+                                    "before_state": state,
+                                    "original_value": before,
+                                }
+                            )
+                        else:
+                            preserved_direct = 1
                     elif state == "DEFAULT_VALUE":
                         before = self._property(element, property_name)
                         if self._json_value(before) == self._json_value(
@@ -961,6 +996,8 @@ class UNOBridge:
                                 {
                                     "object": element,
                                     "before": self._json_value(before),
+                                    "before_state": state,
+                                    "original_value": before,
                                 }
                             )
                     else:
@@ -1010,8 +1047,8 @@ class UNOBridge:
                     for item in prepared:
                         for operation in item["operations"]:
                             target_object = operation["object"]
+                            applied_operations.append(operation)
                             setattr(target_object, property_name, normalized_value)
-                            applied_operations.append((target_object, property_name))
                             if self._json_value(
                                 self._property(target_object, property_name)
                             ) != self._json_value(normalized_value):
@@ -1022,11 +1059,17 @@ class UNOBridge:
                         set_modified(True)
                 except Exception as apply_error:
                     rollback_errors = []
-                    for target_object, property_to_restore in reversed(
-                        applied_operations
-                    ):
+                    for operation in reversed(applied_operations):
+                        target_object = operation["object"]
                         try:
-                            target_object.setPropertyToDefault(property_to_restore)
+                            if operation["before_state"] == "DIRECT_VALUE":
+                                setattr(
+                                    target_object,
+                                    property_name,
+                                    operation["original_value"],
+                                )
+                            else:
+                                target_object.setPropertyToDefault(property_name)
                         except Exception as rollback_error:
                             rollback_errors.append(str(rollback_error))
                     return {
@@ -1043,6 +1086,7 @@ class UNOBridge:
                         "location": item["location"],
                         "style": item["style"],
                         "property_name": property_name,
+                        "override_direct": override_direct,
                         "before": item["before"],
                         "after": self._json_value(normalized_value),
                         "updated_portions": len(item["operations"]),
@@ -1064,6 +1108,7 @@ class UNOBridge:
                     "type": doc_type,
                 },
                 "property_name": property_name,
+                "override_direct": override_direct,
                 "count": len(changes),
                 "updated_portions": len(applied_operations)
                 if not dry_run

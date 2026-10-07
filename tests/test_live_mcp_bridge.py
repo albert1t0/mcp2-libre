@@ -113,6 +113,7 @@ async def test_tools_are_registered_and_forward_calls(monkeypatch):
                 "value": "Calibri",
                 "document_identifier": "file:///target",
                 "dry_run": False,
+                "override_direct": True,
             },
         )
 
@@ -180,6 +181,7 @@ async def test_tools_are_registered_and_forward_calls(monkeypatch):
                 "value": "Calibri",
                 "dry_run": False,
                 "document_identifier": "file:///target",
+                "override_direct": True,
             },
             bridge.REQUEST_TIMEOUT,
         ),

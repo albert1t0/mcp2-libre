@@ -207,8 +207,8 @@ def update_writer_paragraph_style_live(
 @mcp.tool(
     description=(
         "Apply one allowlisted formatting property directly to guarded Writer body "
-        "paragraphs. Preserves directly formatted portions, previews by default, "
-        "and never saves."
+        "paragraphs. Preserves direct values by default; override_direct can replace "
+        "direct values of only the selected property. Previews by default and never saves."
     )
 )
 def apply_writer_paragraph_formatting_live(
@@ -230,6 +230,7 @@ def apply_writer_paragraph_formatting_live(
     value: str | float | int,
     document_identifier: str | None = None,
     dry_run: bool = True,
+    override_direct: bool = False,
 ) -> dict[str, Any]:
     parameters: dict[str, Any] = {
         "targets": targets,
@@ -239,6 +240,8 @@ def apply_writer_paragraph_formatting_live(
     }
     if document_identifier is not None:
         parameters["document_identifier"] = document_identifier
+    if override_direct:
+        parameters["override_direct"] = True
     return _execute_tool("apply_writer_paragraph_formatting_live", parameters)
 
 

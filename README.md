@@ -274,7 +274,10 @@ body paragraph by location and includes its exact `expected_text` and
 `expected_style`; duplicate paragraph locations are rejected. The whole batch
 is preflighted before any changes. Character properties are applied only to
 portions inheriting the value, preserving directly formatted portions. It also
-previews by default and accepts `dry_run: false` to apply in memory.
+previews by default and accepts `dry_run: false` to apply in memory. Set the
+optional `override_direct` flag to `true` to replace direct values of the
+selected property too; other formatting properties and non-target paragraphs
+remain unchanged. By default, `override_direct` is `false`.
 
 Both operations accept an optional `document_identifier` for an already-open
 Writer document and never save automatically. `targets` accepts 1–500 entries.
@@ -312,6 +315,7 @@ paragraph targets instead:
   ],
   "property_name": "CharFontName",
   "value": "Calibri",
+  "override_direct": true,
   "dry_run": true
 }
 ```

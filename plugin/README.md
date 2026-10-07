@@ -289,7 +289,9 @@ without changing its shared style. It requires `targets`, `property_name`, and
 `expected_text`, and exact `expected_style`. The batch is preflighted before
 mutation, duplicate locations are rejected, and character formatting is only
 applied to portions inheriting that property, preserving directly formatted
-portions. It previews by default and accepts at most 500 targets.
+portions by default. Set `override_direct: true` to replace direct values of
+the selected property as well, without changing other formatting attributes.
+It previews by default and accepts at most 500 targets.
 
 Both operations can target a specific already-open document with
 `document_identifier` and never save automatically.
@@ -322,6 +324,7 @@ curl -X POST http://localhost:8765/tools/apply_writer_paragraph_formatting_live 
     }],
     "property_name":"CharFontName",
     "value":"Calibri",
+    "override_direct":true,
     "dry_run":true
   }'
 ```
