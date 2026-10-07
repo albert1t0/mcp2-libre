@@ -12,7 +12,7 @@ import os
 # Add the src directory to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), 'src'))
 
-from mcp.shared.memory import create_connected_server_and_client_session as client_session
+from mcp import Client
 from libremcp import mcp
 
 async def test_mcp_client():
@@ -20,7 +20,7 @@ async def test_mcp_client():
     print("Testing LibreOffice MCP Server Tools")
     print("=" * 50)
     
-    async with client_session(mcp._mcp_server) as client:
+    async with Client(mcp) as client:
         # List available tools
         tools_result = await client.list_tools()
         print(f"\n📋 Available Tools ({len(tools_result.tools)}):")
@@ -41,8 +41,8 @@ async def test_mcp_client():
             "content": "This is a test document created via MCP!\n\nIt demonstrates the LibreOffice MCP Server capabilities."
         })
         
-        if result.structuredContent:
-            doc_info = result.structuredContent
+        if result.structured_content:
+            doc_info = result.structured_content
             print(f"   ✓ Created: {doc_info['filename']}")
             print(f"   ✓ Size: {doc_info['size_bytes']} bytes")
         
@@ -52,8 +52,8 @@ async def test_mcp_client():
             "path": "/tmp/mcp_test_doc.odt"
         })
         
-        if result.structuredContent:
-            content = result.structuredContent
+        if result.structured_content:
+            content = result.structured_content
             print(f"   ✓ Words: {content['word_count']}")
             print(f"   ✓ Characters: {content['char_count']}")
             print(f"   ✓ Content preview: {content['content'][:100]}...")
@@ -64,8 +64,8 @@ async def test_mcp_client():
             "path": "/tmp/mcp_test_doc.odt"
         })
         
-        if result.structuredContent:
-            stats = result.structuredContent
+        if result.structured_content:
+            stats = result.structured_content["result"]
             if 'content_stats' in stats:
                 content_stats = stats['content_stats']
                 print(f"   ✓ Words: {content_stats['word_count']}")
@@ -85,7 +85,7 @@ async def test_mcp_client():
             "position": "end"
         })
         
-        if result.structuredContent:
+        if result.structured_content:
             print("   ✓ Text added successfully")
         
         # Test document conversion (if it works)
@@ -97,8 +97,8 @@ async def test_mcp_client():
                 "target_format": "html"
             })
             
-            if result.structuredContent:
-                conversion = result.structuredContent
+            if result.structured_content:
+                conversion = result.structured_content
                 if conversion['success']:
                     print(f"   ✓ Converted to HTML successfully")
                 else:
@@ -110,8 +110,7 @@ async def test_mcp_client():
         print("\n📂 Testing resource access...")
         try:
             # Try to read the document resource with correct URI format
-            from pydantic import AnyUrl
-            resource_uri = AnyUrl("document://tmp/mcp_test_doc.odt")
+            resource_uri = "document://tmp/mcp_test_doc.odt"
             resource_result = await client.read_resource(resource_uri)
             if resource_result.contents:
                 content = resource_result.contents[0]

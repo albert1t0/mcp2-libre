@@ -1,6 +1,6 @@
 from typing import Any
 import httpx
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 
-# Initialize FastMCP server
-mcp = FastMCP("libremcp")
+# Initialize MCP server
+mcp = MCPServer("libremcp")

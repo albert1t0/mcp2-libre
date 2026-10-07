@@ -18,10 +18,10 @@ from datetime import datetime
 
 import httpx
 from pydantic import BaseModel, Field
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 
-# Initialize FastMCP server
-mcp = FastMCP("LibreOffice MCP Server")
+# Initialize MCP server
+mcp = MCPServer("LibreOffice MCP Server")
 
 
 # Data models for structured responses
@@ -762,7 +762,7 @@ def list_documents() -> List[str]:
     return sorted(documents)
 
 
-@mcp.resource("document://{path}")
+@mcp.resource("document://{+path}")
 def get_document_content(path: str) -> str:
     """Get the text content of a specific document"""
     try:
