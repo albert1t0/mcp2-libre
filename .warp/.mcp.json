@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "libreoffice-live": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "/home/albert1t0/GitHub/mcp-libre",
+        "--no-sync",
+        "python",
+        "-m",
+        "src.libreoffice_live_bridge"
+      ],
+      "working_directory": "/home/albert1t0/GitHub/mcp-libre",
+      "env": {
+        "LIBREOFFICE_MCP_URL": "http://localhost:8765"
+      }
+    }
+  }
+}

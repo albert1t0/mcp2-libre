@@ -9,12 +9,15 @@ import json
 import sys
 import os
 
+import pytest
 # Add the src directory to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), 'src'))
 
 from mcp import Client
 from libremcp import mcp
 
+
+@pytest.mark.asyncio
 async def test_mcp_client():
     """Test the MCP server by calling its tools as a client would"""
     print("Testing LibreOffice MCP Server Tools")
